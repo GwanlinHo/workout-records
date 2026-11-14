@@ -127,7 +127,7 @@
       return '<div class="card"><h2>' + C.CATEGORY_NAME[cat] + '</h2><div class="act-grid">' +
         items.map(function (a) {
           return '<button class="btn act" data-action="pick" data-id="' + esc(a.id) + '">' + esc(a.name) +
-            '<small>' + C.INTENSITY_NAME[a.defaultIntensity] + (a.autoIntensity ? "・依步頻" : "") + "</small></button>";
+            '<small>' + (a.autoIntensity ? "結束時選強度" : C.INTENSITY_NAME[a.defaultIntensity]) + "</small></button>";
         }).join("") + "</div></div>";
     }).join("");
     $("activityGroups").innerHTML = html;
@@ -135,14 +135,10 @@
 
   /* ================= 計時 ================= */
   var session = null;      /* 見 saveSession */
-  var detector = null;
   var tickTimer = null;
-  var lastMotionT = 0;
-  var motionState = "off"; /* off | asking | on | denied | unsupported */
 
   function saveSession() {
     if (!session) { try { localStorage.removeItem(SESSION_KEY); } catch (e) { /* 忽略 */ } return; }
-    if (detector) session.imu = detector.snapshot();
     try { localStorage.setItem(SESSION_KEY, JSON.stringify(session)); } catch (e) { /* 忽略 */ }
   }
 
@@ -161,8 +157,7 @@
       return;
     }
     var a = activityById(id);
-    session = { activityId: id, startedAt: null, pauses: [], pausedAt: null, imu: { steps: 0, coveredMs: 0 },
-      bpm: a.bpm || 180 };
+    session = { activityId: id, startedAt: null, pauses: [], pausedAt: null, bpm: a.bpm || 180 };
     metro.bpm = C.clampBpm(session.bpm);
     openSessionScreen();
   }
@@ -182,25 +177,19 @@
   }
 
   function sessionGo() {
-    /* 都在使用者點擊的當下：動作權限、音訊解鎖、Wake Lock 第一次要求 */
+    /* 在使用者點擊的當下：音訊解鎖 */
     session.startedAt = now();
     session.pauses = [];
     session.pausedAt = null;
-    detector = C.createStepDetector();
-    startMotion();
     saveSession();
     openSessionScreen();
     startTicking();
-    requestWake();
     if (metro.wanted) metroStart();
   }
 
   function startTicking() {
     clearInterval(tickTimer);
-    tickTimer = setInterval(function () {
-      updateTimer();
-      wakeKeepAlive();
-    }, 500);
+    tickTimer = setInterval(updateTimer, 500);
     updateTimer();
   }
 
@@ -218,24 +207,6 @@
     var a = activityById(session.activityId);
     $("bannerName").textContent = a.name;
     $("bannerTime").textContent = C.formatDuration(ms / 1000);
-    if (detector) {
-      var t = performance.now();
-      $("stSteps").textContent = detector.state.steps;
-      var cad = detector.cadence(lastMotionT || t);
-      if (t - lastMotionT > 3000) cad = 0;
-      $("stCadence").textContent = cad ? cad : "-";
-      var cmp = "";
-      if (metro.on && cad) {
-        var diff = cad - metro.bpm;
-        cmp = "實際步頻 " + cad + "，目標 " + metro.bpm + (Math.abs(diff) <= 5 ? "　[O] 跟上節奏" :
-          diff > 0 ? "　[!] 偏快 " + diff : "　[!] 偏慢 " + (-diff));
-      }
-      $("cadenceCompare").textContent = cmp;
-    }
-    var imuText = { off: "未啟用", asking: "要求權限中", denied: "未授權", unsupported: "不支援" }[motionState];
-    if (motionState === "on") imuText = performance.now() - lastMotionT < 2000 ? "感測中" : "沒有收到資料";
-    $("stImu").textContent = imuText || "-";
-    $("motionRetry").hidden = !(motionState === "off" || motionState === "denied");
     var t2 = now();
     if (t2 - lastPersist > 5000) { lastPersist = t2; saveSession(); }
   }
@@ -252,42 +223,6 @@
     }
     saveSession();
     updateTimer();
-  }
-
-  /* ---------- 動作感測 ---------- */
-  function onMotion(e) {
-    if (!session || !session.startedAt || session.pausedAt || !detector) return;
-    var a = e.accelerationIncludingGravity;
-    if (!a) return;
-    lastMotionT = e.timeStamp || performance.now();
-    detector.push(lastMotionT, a.x, a.y, a.z);
-  }
-
-  function attachMotion() {
-    window.removeEventListener("devicemotion", onMotion);
-    window.addEventListener("devicemotion", onMotion);
-    motionState = "on";
-  }
-
-  function startMotion() {
-    if (typeof window.DeviceMotionEvent === "undefined") { motionState = "unsupported"; return; }
-    if (typeof DeviceMotionEvent.requestPermission === "function") {
-      motionState = "asking";
-      try {
-        DeviceMotionEvent.requestPermission().then(function (p) {
-          if (p === "granted") attachMotion();
-          else motionState = "denied";
-          updateTimer();
-        }, function () { motionState = "off"; updateTimer(); });
-      } catch (err) { motionState = "off"; }
-    } else {
-      attachMotion();
-    }
-  }
-
-  function stopMotion() {
-    window.removeEventListener("devicemotion", onMotion);
-    motionState = "off";
   }
 
   /* ---------- 節拍器 ----------
@@ -459,68 +394,6 @@
     b.classList.toggle("primary", metro.on);
   }
 
-  /* ---------- 螢幕常亮（只用 Screen Wake Lock，沿用金剛經 App 的作法） ---------- */
-  var wakeLock = null;
-  var wakePending = false;
-  var lastWakeTry = 0;
-
-  function wakeWanted() {
-    return state.settings.keepAwake && session && session.startedAt;
-  }
-
-  function requestWake() {
-    if (!wakeWanted()) { releaseWake(); return; }
-    if (!("wakeLock" in navigator) || wakeLock || wakePending || document.visibilityState === "hidden") {
-      updateWakeNote();
-      return;
-    }
-    wakePending = true;
-    lastWakeTry = now();
-    try {
-      navigator.wakeLock.request("screen").then(function (lock) {
-        wakePending = false;
-        if (!wakeWanted()) {
-          try { lock.release(); } catch (e) { /* 忽略 */ }
-          updateWakeNote();
-          return;
-        }
-        wakeLock = lock;
-        lock.addEventListener("release", function () {
-          if (wakeLock === lock) wakeLock = null;
-          updateWakeNote();
-        });
-        updateWakeNote();
-      }, function () {
-        wakePending = false;
-        updateWakeNote();
-      });
-    } catch (e) {
-      wakePending = false;
-    }
-    updateWakeNote();
-  }
-
-  function wakeKeepAlive() {
-    if (wakeWanted() && !wakeLock && !wakePending && now() - lastWakeTry > 10000) requestWake();
-  }
-
-  function releaseWake() {
-    var lock = wakeLock;
-    wakeLock = null;
-    try { if (lock) lock.release(); } catch (e) { /* 忽略 */ }
-    updateWakeNote();
-  }
-
-  function updateWakeNote() {
-    var t;
-    if (!state.settings.keepAwake) t = "可以鎖屏：計時與節拍聲會繼續，但鎖屏期間不會計步。";
-    else if (!("wakeLock" in navigator)) t = "此裝置不支援螢幕常亮，請把系統的自動鎖定時間調長。";
-    else if (wakeLock) t = "螢幕常亮中。";
-    else if (wakePending) t = "正在取得螢幕常亮…";
-    else t = "螢幕常亮取得失敗，會每 10 秒重試。";
-    $("wakeNote").textContent = t;
-  }
-
   /* ---------- 結束 ---------- */
   var finishInfo = null;
 
@@ -529,17 +402,13 @@
     saveSession();
     var a = activityById(session.activityId);
     var durationSec = Math.round(C.activeMs(session, now()) / 1000);
-    var imu = detector ? detector.snapshot() : session.imu;
-    var d = C.decideIntensity(a, durationSec, imu);
-    finishInfo = { activity: a, durationSec: durationSec, imu: imu, decision: d };
+    var d = C.decideIntensity(a);
+    finishInfo = { activity: a, durationSec: durationSec, decision: d };
     $("finName").textContent = a.name;
     $("finDur").textContent = C.formatDuration(durationSec);
-    $("finImu").textContent = imu.steps ? "步數 " + imu.steps + "，平均步頻 " + d.avgCadence + " 步/分，動作感測涵蓋 " +
-      Math.round(d.coverage * 100) + "% 的時間" : "這次沒有收到計步資料";
-    var hint = "";
-    if (d.source === "auto") hint = "已依步頻自動判斷為「" + C.INTENSITY_NAME[d.intensity] + "」，可以修改。";
-    else if (d.needConfirm) hint = "[!] 動作感測資料不足（例如鎖屏或手機沒帶在身上），請選擇這次的強度。";
-    else hint = "已套用此項目的預設強度，可以修改。";
+    var hint = d.needConfirm ?
+      "[!] 請選擇這次的強度：每分鐘不到 100 步選「輕鬆」（不計有氧分鐘數）。不確定的話，可以開節拍器 100 BPM 跟著走來感覺。" :
+      "已套用此項目的預設強度，可以修改。";
     if (a.category === "meal" && durationSec < state.settings.mealMinMinutes * 60) {
       hint += " 這次未滿 " + state.settings.mealMinMinutes + " 分鐘，不算一次飯後運動（有氧分鐘數照強度計算）。";
     }
@@ -554,7 +423,8 @@
   function updateFinCredit() {
     if (!finishInfo) return;
     var sel = document.querySelector('input[name="finInt"]:checked');
-    var intensity = sel ? sel.value : finishInfo.decision.intensity;
+    if (!sel) { $("finCredit").textContent = "選好強度後會顯示計入多少分鐘。"; return; }
+    var intensity = sel.value;
     var rec = { category: finishInfo.activity.category, intensity: intensity, durationSec: finishInfo.durationSec };
     var cr = C.aerobicCredit(rec);
     var k = C.kcal(C.metFor(finishInfo.activity, intensity), state.profile.weightKg, finishInfo.durationSec);
@@ -567,10 +437,11 @@
   var saving = false;
   function finishSave() {
     if (saving || !finishInfo) return;
-    saving = true;
     var sel = document.querySelector('input[name="finInt"]:checked');
+    if (!sel) { toast("請先選擇強度"); return; }
+    saving = true;
     var a = finishInfo.activity;
-    var intensity = sel ? sel.value : finishInfo.decision.intensity;
+    var intensity = sel.value;
     var d = finishInfo.decision;
     var rec = {
       id: C.newId(session.startedAt),
@@ -582,10 +453,7 @@
       activityName: a.name,
       durationSec: finishInfo.durationSec,
       intensity: intensity,
-      intensitySource: intensity === d.intensity ? d.source : "manual",
-      steps: finishInfo.imu.steps || 0,
-      avgCadence: d.avgCadence || 0,
-      imuCoverage: Math.round(d.coverage * 100) / 100,
+      intensitySource: intensity === d.intensity ? "default" : "manual",
       bpm: metro.wanted ? metro.bpm : 0,
       kcal: C.kcal(C.metFor(a, intensity), state.profile.weightKg, finishInfo.durationSec),
       weightKg: state.profile.weightKg,
@@ -615,13 +483,10 @@
 
   function closeSession() {
     clearInterval(tickTimer);
-    stopMotion();
     metroStop();
     session = null;
-    detector = null;
     finishInfo = null;
     saveSession();
-    releaseWake();
     $("finishSheet").hidden = true;
     $("sessionScreen").hidden = true;
     $("sessionBanner").hidden = true;
@@ -634,9 +499,6 @@
     session = s;
     metro.bpm = C.clampBpm(s.bpm || 180);
     if (!s.startedAt) { session = null; saveSession(); return; }
-    detector = C.createStepDetector();
-    detector.restore(s.imu || {});
-    motionState = "off";      /* iOS 權限要在點擊中重新要求 */
     startTicking();
     openSessionScreen();
     toast("已接回進行中的運動");
@@ -709,7 +571,6 @@
       var rows = recs.map(function (r) {
         var t = new Date(r.start);
         var info = [];
-        if (r.steps) info.push(r.steps + " 步");
         if (r.bpm) info.push("節拍 " + r.bpm);
         if (r.manual) info.push("補登");
         return '<li class="rec"><button class="rec-btn" data-action="edit-rec" data-id="' + esc(r.id) + '">' +
@@ -792,7 +653,7 @@
     if (!(durationSec > 0)) { toast("請輸入時間"); return; }
     var p = state.editingId ? DB.getRecord(state.editingId) : Promise.resolve(null);
     p.then(function (old) {
-      var rec = old ? Object.assign({}, old) : { id: C.newId(start), manual: true, steps: 0, avgCadence: 0, imuCoverage: 0, bpm: 0 };
+      var rec = old ? Object.assign({}, old) : { id: C.newId(start), manual: true, bpm: 0 };
       var sameActivity = old && old.activityId === a.id;
       /* 沒改的欄位保留原始精確值，避免 14 分 40 秒被改成 15 分 */
       if (old) {
@@ -853,7 +714,6 @@
     f.querySelectorAll('input[name="weekStart"]').forEach(function (r) { r.checked = +r.value === s.weekStart; });
     f.mealPerDay.value = s.mealPerDay;
     f.mealMinMinutes.value = s.mealMinMinutes;
-    f.keepAwake.checked = !!s.keepAwake;
     f.metronomeVolume.value = s.metronomeVolume;
     if (state.profile) {
       var g = goals();
@@ -866,8 +726,7 @@
     $("activityList").innerHTML = ["meal", "aerobic", "strength"].map(function (cat) {
       return "<h3>" + C.CATEGORY_NAME[cat] + '</h3><ul class="act-list">' + state.activities.filter(function (a) { return a.category === cat; })
         .map(function (a) {
-          return '<li><span>' + esc(a.name) + ' <small class="muted">' + C.INTENSITY_NAME[a.defaultIntensity] +
-            (a.autoIntensity ? "・依步頻" : "") + "</small></span>" +
+          return '<li><span>' + esc(a.name) + ' <small class="muted">' + (a.autoIntensity ? "結束時選強度" : C.INTENSITY_NAME[a.defaultIntensity]) + "</small></span>" +
             (builtin.indexOf(a.id) >= 0 ? '<small class="muted">內建</small>' :
               '<button class="btn small" data-action="del-activity" data-id="' + esc(a.id) + '">刪除</button>') + "</li>";
         }).join("") + "</ul>";
@@ -897,7 +756,6 @@
     s.weekStart = +((f.querySelector('input[name="weekStart"]:checked') || {}).value || 1);
     s.mealPerDay = Math.max(1, Math.min(3, Math.round(+f.mealPerDay.value || 2)));
     s.mealMinMinutes = Math.max(5, Math.min(60, Math.round(+f.mealMinMinutes.value || 15)));
-    s.keepAwake = f.keepAwake.checked;
     s.metronomeVolume = +f.metronomeVolume.value;
     DB.setKV("settings", s).then(function () {
       toast("設定已儲存");
@@ -1023,7 +881,6 @@
       case "open-session": openSessionScreen(); break;
       case "session-pause": togglePause(); break;
       case "session-end": sessionEnd(); break;
-      case "motion-retry": startMotion(); requestWake(); updateTimer(); break;
       case "metro-toggle":
         if (metro.on) metroStop();
         else metroStart();
@@ -1059,10 +916,7 @@
 
   function onVisibility() {
     if (document.visibilityState === "visible") {
-      if (session && session.startedAt) {
-        updateTimer();
-        requestWake();
-      }
+      if (session && session.startedAt) updateTimer();
       if (state.tab === "home") renderHome();
       metroOnVisible();
     } else {
@@ -1124,16 +978,10 @@
     });
   }
 
-  /* 測試用掛鉤：直接餵入動作感測樣本（瀏覽器無法偽造 DeviceMotionEvent 的時間戳） */
+  /* 測試用掛鉤 */
   window.__wr = {
-    feedMotion: function (t, x, y, z) {
-      if (!detector || !session || session.pausedAt) return;
-      lastMotionT = t;
-      detector.push(t, x, y, z);
-    },
     get session() { return session; },
     get metro() { return metro; },
-    get motionState() { return motionState; },
     importText: importText,
     state: state,
   };

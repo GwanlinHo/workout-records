@@ -84,48 +84,19 @@ ok(C.activeMs(Object.assign({}, ses, { pausedAt: 181000 }), 999999) === 120000, 
 ok(C.formatDuration(3725) === "1:02:05" && C.formatDuration(65) === "01:05", "時間格式");
 ok(C.formatMinutes(3900) === "1 小時 5 分" && C.formatMinutes(600) === "10 分", "分鐘格式");
 
-/* ---- 計步：合成加速度 ---- */
-function simulate(spm, seconds, hz, amp, noise, gaps) {
-  const det = C.createStepDetector();
-  const f = spm / 60;
-  let seed = 7;
-  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648 - 0.5; };
-  const dt = 1000 / hz;
-  for (let t = 0; t < seconds * 1000; t += dt) {
-    if (gaps && gaps.some(([a, b]) => t >= a && t < b)) continue;
-    /* 步伐：每步一個尖峰（取正半週次方形成脈衝），加上雜訊與抖動的取樣間隔 */
-    const phase = Math.sin(2 * Math.PI * f * t / 1000);
-    const pulse = amp * Math.pow(Math.max(0, phase), 2) - amp * 0.25;
-    const tt = t + rnd() * 2;
-    det.push(tt, 0.3 + rnd() * noise, 9.81 + pulse + rnd() * noise, 0.5 + rnd() * noise);
-  }
-  return det;
-}
-[[100, 60], [120, 60], [160, 60], [180, 60]].forEach(([spm, s]) => {
-  const det = simulate(spm, s, 60, 4, 0.4);
-  const exp = spm * s / 60;
-  ok(Math.abs(det.state.steps - exp) <= exp * 0.05, spm + " 步/分 計步誤差 5% 內（" + det.state.steps + "/" + exp + "）");
-  const cad = det.cadence(s * 1000);
-  ok(Math.abs(cad - spm) <= spm * 0.05, spm + " 步/分 即時步頻（" + cad + "）");
-});
-let det = simulate(120, 60, 30, 4, 0.4);
-ok(Math.abs(det.state.steps - 120) <= 6, "30Hz 取樣也能計步（" + det.state.steps + "）");
-det = simulate(120, 60, 60, 0.3, 0.1);
-ok(det.state.steps < 5, "靜止微動不計步（" + det.state.steps + "）");
-det = simulate(120, 120, 60, 4, 0.4, [[30000, 90000]]);
-near(det.state.coveredMs / 1000, 60, 1.5, "鎖屏 60 秒不算覆蓋");
-
-/* ---- 強度判定 ---- */
-const walk = C.defaultActivities().find((a) => a.id === "brisk-walk");
-const ssj = C.defaultActivities().find((a) => a.id === "super-slow-jog");
-let d = C.decideIntensity(walk, 600, { steps: 1150, coveredMs: 600000 });
-ok(d.intensity === "moderate" && d.source === "auto" && d.avgCadence === 115, "健走 115 步/分 自動中強度");
-d = C.decideIntensity(walk, 600, { steps: 1350, coveredMs: 600000 });
-ok(d.intensity === "vigorous", "健走 135 步/分 高強度");
-d = C.decideIntensity(walk, 600, { steps: 300, coveredMs: 200000 });
-ok(d.needConfirm && d.source === "default", "覆蓋率 33% 不足，要使用者確認");
-d = C.decideIntensity(ssj, 600, { steps: 1800, coveredMs: 600000 });
-ok(d.intensity === "moderate" && !d.needConfirm, "超慢跑 180 步/分 仍是中強度（不依步頻）");
+/* ---- 強度預選 ---- */
+const acts = C.defaultActivities();
+const walk = acts.find((a) => a.id === "brisk-walk");
+const mealWalk = acts.find((a) => a.category === "meal");
+const ssj = acts.find((a) => a.id === "super-slow-jog");
+let d = C.decideIntensity(walk);
+ok(d.intensity === null && d.needConfirm, "健走不預選強度，要自己選");
+d = C.decideIntensity(mealWalk);
+ok(d.intensity === null && d.needConfirm, "飯後散步不預選強度，要自己選");
+d = C.decideIntensity(ssj);
+ok(d.intensity === "moderate" && !d.needConfirm, "超慢跑預選中強度");
+ok(C.createStepDetector === undefined && C.intensityFromCadence === undefined, "計步功能已移除");
+ok(!("keepAwake" in C.defaultSettings()), "螢幕常亮設定已移除");
 
 /* ---- 節拍器 ---- */
 [180, 173, 160, 101].forEach((bpm) => {

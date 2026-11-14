@@ -86,7 +86,6 @@
         </fieldset>
         <label>飯後運動每天幾次<input name="mealPerDay" type="number" min="1" max="3" required></label>
         <label>飯後運動每次至少幾分鐘才算<input name="mealMinMinutes" type="number" min="5" max="60" required></label>
-        <label class="check"><input type="checkbox" name="keepAwake">運動時保持螢幕常亮（想自動判斷步頻時才需要；不開也可以鎖屏，計時與節拍聲會繼續，只是鎖屏期間不計步）</label>
         <label>節拍聲音量<input name="metronomeVolume" type="range" min="0.1" max="1" step="0.1"></label>
         <p class="small muted">節拍聲在鎖屏和靜音模式下都會繼續播放，播放時其他 App 的音樂會暫停。</p>
         <div class="row">
@@ -136,7 +135,7 @@
         <li>有氧目標：WHO 與國健署建議成人每週 150 分鐘中強度，高強度 1 分鐘等於 2 分鐘；BMI 24 以上依 ACSM 體重管理建議提高到 250 分鐘。</li>
         <li>肌力訓練：每週至少 2 天。65 歲以上另建議平衡訓練。</li>
         <li>飯後運動：和一般有氧同一套規則計入分鐘數（輕鬆強度，也就是步頻不到 100，算 0 分鐘）；另外追蹤每天次數，只要滿設定的分鐘數，不論強度都算一次。</li>
-        <li>步頻判斷強度：每分鐘 100 步以上為中強度、130 步以上為高強度（Tudor-Locke 等人）。只用在有勾選「依步頻判斷」的項目（健走、飯後散步）。</li>
+        <li>強度由你在結束時選：走路類（健走、飯後散步）每分鐘 100 步以上為中強度、130 步以上為高強度（Tudor-Locke 等人），不到 100 步選輕鬆；可以開節拍器 100 BPM 跟著走來感覺。其他項目會預選預設強度。</li>
         <li>熱量：MET 值乘體重乘時間（MET 參考 Compendium of Physical Activities）；基礎代謝率用 Mifflin-St Jeor 公式。</li>
       </ul>
     </div>
@@ -161,18 +160,12 @@
   <p id="sessionState" class="muted center"></p>
 
   <div id="readyPanel" class="center">
-    <p class="muted small">按下開始後會要求「動作與方向」權限，用來計步與判斷步頻；拒絕也可以照常計時。運動中可以鎖屏，計時與節拍聲會繼續，但鎖屏期間不會計步。</p>
+    <p class="muted small">運動中可以鎖屏，計時與節拍聲會繼續。</p>
     <button class="btn primary big" data-action="session-go">開始</button>
   </div>
 
   <div id="runPanel" hidden>
-    <div class="stats">
-      <div><span class="label">步數</span><b id="stSteps" class="mono">0</b></div>
-      <div><span class="label">步頻（步/分）</span><b id="stCadence" class="mono">-</b></div>
-      <div><span class="label">動作感測</span><b id="stImu">-</b></div>
-    </div>
-    <button class="btn small" id="motionRetry" data-action="motion-retry" hidden>重新啟用動作感測</button>
-    <p id="wakeNote" class="muted small center"></p>
+    <p class="muted small center">可以鎖屏，計時與節拍聲會繼續。</p>
   </div>
 
   <div class="card metro">
@@ -193,7 +186,6 @@
       <button class="btn small" data-action="bpm-set" data-bpm="170">170</button>
       <button class="btn small" data-action="bpm-set" data-bpm="180">180</button>
     </div>
-    <p id="cadenceCompare" class="small center muted"></p>
   </div>
 
   <div class="row session-actions" id="sessionActions" hidden>
@@ -208,7 +200,6 @@
   <div class="sheet-body">
     <h2>這次運動</h2>
     <p><b id="finName"></b>　<span id="finDur" class="mono"></span></p>
-    <p id="finImu" class="small muted"></p>
     <p id="finHint" class="hint"></p>
     <fieldset class="seg big-seg" id="finIntensity"><legend>強度</legend>
       <label><input type="radio" name="finInt" value="light">輕鬆<small>還能唱歌</small></label>

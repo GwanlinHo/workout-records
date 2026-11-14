@@ -13,6 +13,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function stubs(page) {
   await page.evaluateOnNewDocument(() => {
     window.__wake = { requests: 0, locks: [] };
+    window.__motionAsk = 0;
+    if (window.DeviceMotionEvent) DeviceMotionEvent.requestPermission = () => { window.__motionAsk++; return Promise.resolve("granted"); };
     window.__wake.held = () => window.__wake.locks.filter((l) => !l.released).length;
     const mk = () => {
       const l = { released: false, ls: [] };
@@ -31,19 +33,6 @@ const ready = (page) => page.waitForFunction(() => document.body.getAttribute("d
 const text = (page, sel) => page.$eval(sel, (e) => e.textContent);
 const visible = (page, sel) => page.$eval(sel, (e) => !e.hidden && !e.closest("[hidden]"));
 async function click(page, sel) { await page.click(sel); await sleep(150); }
-
-/* 以 60Hz 餵入步伐訊號（時間軸對齊 performance.now），從 fromSec 秒前到 toSec 秒前 */
-async function feedSteps(page, spm, fromSecAgo, toSecAgo) {
-  await page.evaluate((spm, a, b) => {
-    const now = performance.now();
-    const f = spm / 60;
-    for (let t = now - a * 1000; t < now - b * 1000; t += 1000 / 60) {
-      const ph = Math.sin(2 * Math.PI * f * t / 1000);
-      const pulse = 4 * Math.pow(Math.max(0, ph), 2) - 1;
-      window.__wr.feedMotion(t, 0.3, 9.81 + pulse, 0.5);
-    }
-  }, spm, fromSecAgo, toSecAgo);
-}
 
 async function startActivity(page, id, minutesAgo) {
   await page.click('#tabbar [data-tab="start"]');
@@ -90,47 +79,34 @@ async function finish(page, intensity) {
   ok((await text(page, "#cardMeal")).includes("今天 0 / 2 次"), "飯後每天 2 次");
   await page.screenshot({ path: SHOT + "shot_home_empty.png", fullPage: true });
 
-  /* ---- 健走：IMU 完整覆蓋，自動判斷中強度 ---- */
+  /* ---- 健走：不計步、不預選強度，要自己選 ---- */
   await startActivity(page, "brisk-walk", 10);
-  ok(await page.evaluate(() => window.__wake.requests === 0), "螢幕常亮預設關閉，不要求 Wake Lock");
-  ok((await text(page, "#wakeNote")).includes("可以鎖屏"), "提示可以鎖屏");
-  await feedSteps(page, 115, 600, 0);
+  ok(await page.evaluate(() => window.__wake.requests === 0 && window.__motionAsk === 0), "開始時不要求動作感測權限、不要求螢幕常亮");
+  ok(await page.evaluate(() => !document.getElementById("stSteps") && !document.getElementById("motionRetry") && !document.getElementById("cadenceCompare")), "計時畫面沒有步數、步頻欄位");
+  ok((await text(page, "#runPanel")).includes("可以鎖屏"), "提示可以鎖屏");
   await sleep(700);
-  const steps = +(await text(page, "#stSteps"));
-  ok(Math.abs(steps - 1150) < 60, "健走 10 分鐘計步約 1150（" + steps + "）");
-  const cad = +(await text(page, "#stCadence"));
-  ok(Math.abs(cad - 115) <= 5, "即時步頻約 115（" + cad + "）");
-  ok((await text(page, "#stImu")) === "感測中", "動作感測狀態：感測中");
   ok((await text(page, "#timer")).startsWith("10:0"), "計時約 10 分鐘（" + (await text(page, "#timer")) + "）");
   await page.screenshot({ path: SHOT + "shot_session.png", fullPage: true });
   await finish(page);
-  ok((await text(page, "#finHint")).includes("自動判斷為「中強度」"), "結束時自動判斷中強度");
-  ok(await page.$eval('#finIntensity input[value="moderate"]', (e) => e.checked), "預選中強度");
-  ok((await text(page, "#finCredit")).includes("計入有氧 10 分鐘"), "預覽計入有氧 10 分鐘");
+  ok((await text(page, "#finHint")).includes("請選擇這次的強度") && (await text(page, "#finHint")).includes("100 步"), "結束時提示依步頻自己選強度");
+  ok(await page.$$eval('#finIntensity input', (rs) => rs.every((r) => !r.checked)), "健走不預選強度");
+  ok((await text(page, "#finCredit")).includes("選好強度後"), "未選強度時不顯示計入分鐘");
+  await page.evaluate(() => document.querySelector('[data-action="finish-save"]').click());
+  await sleep(200);
+  ok(await visible(page, "#finishSheet") && (await text(page, "#toast")).includes("請先選擇強度"), "沒選強度不能儲存");
+  await page.click('#finIntensity input[value="moderate"]');
+  await sleep(100);
+  ok((await text(page, "#finCredit")).includes("計入有氧 10 分鐘"), "選中強度後預覽計入有氧 10 分鐘");
   await page.screenshot({ path: SHOT + "shot_finish.png", fullPage: true });
   await click(page, '[data-action="finish-save"]');
   await sleep(300);
-  ok(await page.evaluate(() => window.__wake.held() === 0), "結束後釋放螢幕常亮");
   ok((await text(page, "#cardAerobic")).includes("10 / 150"), "本週有氧 10 分鐘");
+  ok(await page.evaluate(() => window.__wr.session === null && window.__wake.requests === 0), "整個過程沒有用到螢幕常亮");
 
-  /* ---- 真 DeviceMotionEvent 接線 ---- */
-  await startActivity(page, "brisk-walk", 0);
-  await page.evaluate(() => {
-    for (let i = 0; i < 5; i++) {
-      window.dispatchEvent(new DeviceMotionEvent("devicemotion", { accelerationIncludingGravity: { x: 0, y: 9.8, z: 0 }, interval: 16 }));
-    }
-  });
-  await sleep(700);
-  ok((await text(page, "#stImu")) === "感測中", "真 devicemotion 事件有接上監聽");
-
-  /* ---- 鎖屏缺口：20 分鐘只收到 3 分鐘資料，要使用者選強度 ---- */
-  await page.evaluate(() => { window.__wr.session.startedAt -= 20 * 60000; });
-  await feedSteps(page, 120, 180, 0);
-  await finish(page);
-  ok((await text(page, "#finHint")).includes("動作感測資料不足"), "感測不足時提示選強度");
-  await page.click('#finIntensity input[value="vigorous"]');
-  await sleep(100);
-  ok((await text(page, "#finCredit")).includes("計入有氧 40 分鐘"), "改高強度預覽 40 分鐘");
+  /* ---- 健走 20 分鐘選高強度 ---- */
+  await startActivity(page, "brisk-walk", 20);
+  await finish(page, "vigorous");
+  ok((await text(page, "#finCredit")).includes("計入有氧 40 分鐘"), "高強度預覽 40 分鐘");
   await click(page, '[data-action="finish-save"]');
   await sleep(300);
   ok((await text(page, "#cardAerobic")).includes("50 / 150"), "高強度 20 分鐘計 40，累計 50");
@@ -217,19 +193,13 @@ async function finish(page, intensity) {
   await sleep(400);
   m = await au();
   ok(m.src && m.on && m.state === "running", "再按開啟恢復播放");
-  await feedSteps(page, 170, 15, 0);
-  await sleep(700);
-  ok((await text(page, "#cadenceCompare")).includes("偏慢 10"), "顯示實際步頻與目標差距（" + (await text(page, "#cadenceCompare")) + "）");
-  const stepsBefore = await text(page, "#stSteps");
   await page.reload({ waitUntil: "load" });
   await ready(page);
   await sleep(300);
   ok(await visible(page, "#sessionScreen"), "重新開啟 App 接回進行中的運動");
   ok((await text(page, "#timer")).startsWith("05:"), "接回後計時延續（" + (await text(page, "#timer")) + "）");
-  ok((await text(page, "#stSteps")) === stepsBefore && +stepsBefore > 0, "接回後步數延續（" + stepsBefore + "）");
-  ok(await visible(page, "#motionRetry"), "接回後提供重新啟用動作感測按鈕");
   await finish(page);
-  ok(await page.$eval('#finIntensity input[value="moderate"]', (e) => e.checked), "超慢跑步頻 180 仍是中強度");
+  ok(await page.$eval('#finIntensity input[value="moderate"]', (e) => e.checked) && (await text(page, "#finHint")).includes("預設強度"), "超慢跑預選中強度");
   await click(page, '[data-action="finish-save"]');
   await sleep(300);
   const acts = await page.evaluate(() => window.__wr.state.activities.find((a) => a.id === "super-slow-jog").bpm);
@@ -238,7 +208,9 @@ async function finish(page, intensity) {
   /* ---- 飯後散步：15 分鐘門檻 ---- */
   await startActivity(page, "meal-walk", 16);
   await finish(page);
-  ok((await text(page, "#finHint")).includes("動作感測資料不足"), "飯後散步沒帶手機要確認強度");
+  ok((await text(page, "#finHint")).includes("請選擇這次的強度") && (await page.$$eval('#finIntensity input', (rs) => rs.every((r) => !r.checked))), "飯後散步不預選強度");
+  await page.click('#finIntensity input[value="moderate"]');
+  await sleep(100);
   ok((await text(page, "#finCredit")).includes("計入有氧 16 分鐘") && (await text(page, "#finCredit")).includes("算一次飯後運動"), "中強度飯後 16 分鐘：計入有氧且算一次");
   /* 連點兩下儲存只能存一筆 */
   await page.evaluate(() => { const b = document.querySelector('[data-action="finish-save"]'); b.click(); b.click(); });
@@ -389,17 +361,14 @@ async function finish(page, intensity) {
   }
   await page.click('#tabbar [data-tab="settings"]');
   await sleep(300);
-  await page.$eval("#settingsForm [name=keepAwake]", (e) => { e.checked = true; });
-  await page.$eval("#settingsForm button[type=submit]", (e) => e.click());
-  await sleep(400);
+  ok(await page.evaluate(() => !document.querySelector("#settingsForm [name=keepAwake]")), "設定頁已無螢幕常亮選項");
   await page.setViewport({ width: 320, height: 640, isMobile: true, hasTouch: true });
   await startActivity(page, "jog", 0);
-  ok(await page.evaluate(() => window.__wake.held() === 1), "設定開啟螢幕常亮後，運動時取得 Wake Lock");
   ok(await page.evaluate(() => document.documentElement.scrollWidth <= 320), "計時畫面 320 寬不溢出");
   await page.screenshot({ path: SHOT + "shot_session_320.png", fullPage: true });
   await click(page, '[data-action="session-end"]');
   await click(page, '[data-action="finish-discard"]');
-  ok(await page.evaluate(() => window.__wake.held() === 0), "結束後釋放 Wake Lock");
+  ok(await page.evaluate(() => window.__wake.requests === 0 && window.__motionAsk === 0), "全程沒有要求螢幕常亮或動作感測權限");
 
   /* ---- 匯入到全新的手機 ---- */
   const ctx2 = await browser.createBrowserContext();

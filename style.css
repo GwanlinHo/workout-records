@@ -165,10 +165,6 @@ main { max-width: 640px; margin: 0 auto; padding: 12px 16px; }
 .tag { background: var(--accent-soft); color: var(--ink); border-radius: 999px; padding: 2px 12px; font-size: 14px; }
 .session-name { text-align: center; font-size: 26px; margin-top: 12px; }
 .timer { text-align: center; font-size: 72px; font-weight: 700; letter-spacing: 1px; line-height: 1.1; margin: 8px 0 0; }
-.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; margin: 12px 0; }
-.stats > div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 8px 4px; }
-.stats .label { display: block; font-size: 12px; color: var(--muted); }
-.stats b { font-size: 22px; }
 .session-actions { margin: 14px auto; }
 .metro { margin-top: 12px; }
 .metro-head { display: flex; justify-content: space-between; align-items: center; }

@@ -103,15 +103,8 @@
   /* ---------- 強度與計分 ---------- */
   var INTENSITY_NAME = { light: "輕鬆", moderate: "中強度", vigorous: "高強度" };
 
-  /* 步頻（步/分）判斷強度：Tudor-Locke 等人 */
-  function intensityFromCadence(spm) {
-    if (spm >= 130) return "vigorous";
-    if (spm >= 100) return "moderate";
-    return "light";
-  }
-
   /* 計入每週有氧目標的分鐘數（飯後運動與一般有氧同一套規則，使用者指定）
-   * - 中強度 1 倍、高強度 2 倍、輕鬆不計入（WHO 定義；步頻不到 100 即輕鬆）
+   * - 中強度 1 倍、高強度 2 倍、輕鬆不計入（WHO 定義；走路步頻不到 100 步/分即輕鬆）
    * - 肌力：不計入有氧
    * 註：輕鬆的飯後運動雖然不計分鐘數，只要滿 mealMinMinutes 仍算一次飯後運動 */
   function aerobicCredit(rec) {
@@ -194,79 +187,13 @@
     return Math.floor(m / 60) + " 小時 " + (m % 60) + " 分";
   }
 
-  /* ---------- 計步 ----------
-   * 輸入：事件時間戳（毫秒）與加速度（含重力，m/s^2）
-   * 作法：取向量長度 → 指數平均去掉重力 → 低通平滑 → 帶遲滯的峰值偵測
-   * 覆蓋率：相鄰樣本間隔 < 1 秒才算「有收到感測資料」 */
-  function createStepDetector(opts) {
-    opts = opts || {};
-    var minInterval = opts.minIntervalMs || 250;      /* 最快 240 步/分 */
-    var maxInterval = opts.maxIntervalMs || 2000;
-    var hi = opts.highThreshold || 1.0;               /* m/s^2 */
-    var lo = opts.lowThreshold || 0.3;
-    var st = {
-      steps: 0, coveredMs: 0, lastT: null, mean: null, smooth: 0,
-      armed: true, lastStepT: null, recent: [],
-    };
-    function push(t, ax, ay, az) {
-      if (ax == null || ay == null || az == null) return;
-      var mag = Math.sqrt(ax * ax + ay * ay + az * az);
-      if (st.lastT != null) {
-        var gap = t - st.lastT;
-        if (gap > 0 && gap < 1000) st.coveredMs += gap;
-        else if (gap >= 1000) { st.armed = true; st.smooth = 0; }
-      }
-      st.lastT = t;
-      st.mean = st.mean == null ? mag : st.mean + (mag - st.mean) * 0.02;
-      var x = mag - st.mean;
-      st.smooth = st.smooth + (x - st.smooth) * 0.35;
-      if (st.armed && st.smooth > hi) {
-        if (st.lastStepT == null || t - st.lastStepT >= minInterval) {
-          st.steps++;
-          st.lastStepT = t;
-          st.recent.push(t);
-          if (st.recent.length > 40) st.recent.shift();
-        }
-        st.armed = false;
-      } else if (!st.armed && st.smooth < lo) {
-        st.armed = true;
-      }
-    }
-    /* 最近 windowMs 內的即時步頻 */
-    function cadence(nowT, windowMs) {
-      windowMs = windowMs || 10000;
-      var r = st.recent.filter(function (t) { return nowT - t <= windowMs; });
-      if (r.length < 4) return 0;
-      var span = r[r.length - 1] - r[0];
-      if (span <= 0 || nowT - r[r.length - 1] > maxInterval) return 0;
-      return Math.round((r.length - 1) / span * 60000);
-    }
-    function snapshot() {
-      return { steps: st.steps, coveredMs: st.coveredMs };
-    }
-    function restore(s) {
-      st.steps = s.steps || 0;
-      st.coveredMs = s.coveredMs || 0;
-    }
-    return { push: push, cadence: cadence, snapshot: snapshot, restore: restore, state: st };
-  }
-
-  /* 結束時判斷強度
-   * - 有勾「依步頻判斷」的項目，且 IMU 覆蓋率 >= 50%、平均步頻有效 → 自動
-   * - 否則用項目預設強度，需要時提示使用者確認 */
-  function decideIntensity(activity, durationSec, imu) {
-    var coverage = durationSec > 0 ? Math.min(1, imu.coveredMs / 1000 / durationSec) : 0;
-    var avgCadence = imu.coveredMs > 0 ? Math.round(imu.steps / (imu.coveredMs / 60000)) : 0;
-    if (activity.autoIntensity) {
-      if (coverage >= 0.5 && imu.steps >= 20) {
-        return { intensity: intensityFromCadence(avgCadence), source: "auto",
-          coverage: coverage, avgCadence: avgCadence, needConfirm: false };
-      }
-      return { intensity: activity.defaultIntensity, source: "default",
-        coverage: coverage, avgCadence: avgCadence, needConfirm: true };
-    }
-    return { intensity: activity.defaultIntensity, source: "default",
-      coverage: coverage, avgCadence: avgCadence, needConfirm: false };
+  /* 結束時預選的強度
+   * - 走路類（autoIntensity：健走、飯後散步）不預選，要使用者依步頻自己判斷（不到 100 步/分選輕鬆）
+   *   計步已移除（實測準確度不足），欄位名稱沿用以相容已存的項目設定
+   * - 其他項目預選預設強度 */
+  function decideIntensity(activity) {
+    if (activity.autoIntensity) return { intensity: null, needConfirm: true };
+    return { intensity: activity.defaultIntensity, needConfirm: false };
   }
 
   /* ---------- 節拍器音軌 ----------
@@ -359,7 +286,6 @@
       weekStart: 1,
       mealPerDay: 2,
       mealMinMinutes: 15,
-      keepAwake: false,
       metronomeVolume: 0.7,
     };
   }
@@ -399,11 +325,11 @@
     ageFromBirthYear: ageFromBirthYear, bmi: bmi, bmiLevel: bmiLevel, bmr: bmr,
     weeklyGoals: weeklyGoals,
     INTENSITY_NAME: INTENSITY_NAME, CATEGORY_NAME: CATEGORY_NAME,
-    intensityFromCadence: intensityFromCadence, aerobicCredit: aerobicCredit,
+    aerobicCredit: aerobicCredit,
     kcal: kcal, metFor: metFor,
     weekSummary: weekSummary,
     activeMs: activeMs, formatDuration: formatDuration, formatMinutes: formatMinutes,
-    createStepDetector: createStepDetector, decideIntensity: decideIntensity,
+    decideIntensity: decideIntensity,
     clickPositions: clickPositions, metronomeSamples: metronomeSamples, buildMetronomeWav: buildMetronomeWav, clampBpm: clampBpm,
     defaultActivities: defaultActivities, defaultSettings: defaultSettings,
     validateRecord: validateRecord, parseBackup: parseBackup, newId: newId,
