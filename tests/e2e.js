@@ -182,7 +182,8 @@ async function finish(page, intensity) {
   await startActivity(page, "meal-walk", 16);
   await finish(page);
   ok((await text(page, "#finHint")).includes("動作感測資料不足"), "飯後散步沒帶手機要確認強度");
-  await click(page, '[data-action="finish-save"]');
+  /* 連點兩下儲存只能存一筆 */
+  await page.evaluate(() => { const b = document.querySelector('[data-action="finish-save"]'); b.click(); b.click(); });
   await sleep(300);
   await startActivity(page, "meal-walk", 14);
   await finish(page);
@@ -211,6 +212,20 @@ async function finish(page, intensity) {
   const n = await page.$$eval("#dayDetail .rec", (l) => l.length);
   ok(n === 6, "今天 6 筆紀錄（" + n + "）");
   await page.screenshot({ path: SHOT + "shot_history.png", fullPage: true });
+  /* 只改強度不可動到原本精確的時間（14 分多的飯後散步不能被進位成 15 分） */
+  const mealRec = await page.evaluate(() => WRDB.allRecords().then((l) => {
+    const r = l.find((x) => x.category === "meal" && x.durationSec < 900);
+    r.durationSec = 880;   /* 14 分 40 秒 */
+    return WRDB.putRecord(r).then(() => r);
+  }));
+  await page.evaluate((id) => document.querySelector('[data-action="edit-rec"][data-id="' + id + '"]').click(), mealRec.id);
+  await sleep(300);
+  await page.click('#editForm input[name="intensity"][value="moderate"]');
+  await click(page, "#editForm button[type=submit]");
+  await sleep(400);
+  const mealAfter = await page.evaluate((id) => WRDB.getRecord(id), mealRec.id);
+  ok(mealAfter.durationSec === mealRec.durationSec && mealAfter.start === mealRec.start && mealAfter.intensity === "moderate",
+    "只改強度時保留精確時間（" + mealRec.durationSec + " 秒）");
   await page.evaluate(() => document.querySelector('#dayDetail [data-action="manual-add"]').click());
   await sleep(200);
   const yday = await page.evaluate(() => WRCore.addDays(WRCore.dateKey(Date.now()), -1));
@@ -270,6 +285,15 @@ async function finish(page, intensity) {
   /* ---- 匯出 / 匯入 ---- */
   await page.click('#tabbar [data-tab="settings"]');
   await sleep(300);
+  /* iOS 路徑：分享面板必須在點擊當下同步呼叫 */
+  await page.evaluate(() => {
+    window.__shared = null;
+    navigator.canShare = () => true;
+    navigator.share = (d) => { window.__shared = { name: d.files[0].name, active: navigator.userActivation ? navigator.userActivation.isActive : true }; return Promise.resolve(); };
+  });
+  await click(page, '[data-action="export"]');
+  const shared = await page.evaluate(() => window.__shared);
+  ok(shared && /^workout-records-\d{4}-\d{2}-\d{2}\.json$/.test(shared.name) && shared.active, "匯出走分享面板且仍在使用者手勢內（" + JSON.stringify(shared) + "）");
   await page.evaluate(() => { navigator.canShare = undefined; });
   await click(page, '[data-action="export"]');
   await sleep(500);
@@ -284,7 +308,7 @@ async function finish(page, intensity) {
   await page.setOfflineMode(true);
   await page.reload({ waitUntil: "load" });
   await ready(page);
-  ok((await text(page, "#cardAerobic")).includes("85 / 250"), "離線重新開啟仍可使用且資料還在");
+  ok((await text(page, "#cardAerobic")).includes("86 / 250"), "離線重新開啟仍可使用且資料還在（飯後改為 14 分 40 秒後累計 85.7）");
   await page.setOfflineMode(false);
 
   /* ---- 版面：手機寬度沒有橫向捲動 ---- */

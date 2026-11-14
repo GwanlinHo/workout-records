@@ -150,14 +150,13 @@
       rawSec += r.durationSec;
       kcalSum += r.kcal || 0;
       if (r.category === "strength") d.strength = true;
-      if (r.category === "meal" && r.durationSec >= goals.mealMinMinutes * 60) {
-        d.mealCount++;
-        mealCount++;
-      }
+      if (r.category === "meal" && r.durationSec >= goals.mealMinMinutes * 60) d.mealCount++;
     });
     var strengthDays = days.filter(function (k) { return perDay[k].strength; }).length;
     var mealDaysMet = days.filter(function (k) { return perDay[k].mealCount >= goals.mealPerDay; }).length;
     var mealTarget = goals.mealPerDay * 7;
+    /* 每天最多算 mealPerDay 次，一天多做不能補另一天 */
+    days.forEach(function (k) { mealCount += Math.min(perDay[k].mealCount, goals.mealPerDay); });
     return {
       days: days,
       perDay: perDay,
@@ -165,8 +164,7 @@
       aerobicMet: credit >= goals.aerobicMinutes,
       strengthDays: strengthDays,
       strengthMet: strengthDays >= goals.strengthDays,
-      mealCount: Math.min(mealCount, mealTarget),
-      mealCountRaw: mealCount,
+      mealCount: mealCount,
       mealTarget: mealTarget,
       mealDaysMet: mealDaysMet,
       mealMet: mealCount >= mealTarget,
@@ -192,7 +190,7 @@
   }
 
   function formatMinutes(sec) {
-    var m = Math.round(sec / 60);
+    var m = Math.floor(sec / 60);
     if (m < 60) return m + " 分";
     return Math.floor(m / 60) + " 小時 " + (m % 60) + " 分";
   }

@@ -63,6 +63,16 @@ ok(!w.aerobicMet, "未達 150");
 ok(w.strengthDays === 2 && w.strengthMet, "肌力兩天達標");
 ok(w.mealCount === 2 && w.mealDaysMet === 1 && w.mealTarget === 14, "飯後次數與達標天數");
 ok(w.perDay["2026-11-10"].totalSec === (14 + 30) * 60, "單日總時間含肌力");
+/* 一天三次不能補另一天 */
+const meals = [];
+["2026-11-09", "2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-14"].forEach((k) => { meals.push(mk(k, "meal", 15), mk(k, "meal", 15)); });
+meals.push(mk("2026-11-14", "meal", 15), mk("2026-11-15", "meal", 15));
+let wm = C.weekSummary(meals, "2026-11-09", goals);
+ok(wm.mealCount === 13 && !wm.mealMet && wm.mealDaysMet === 6, "週六 3 次不能補週日 1 次（" + wm.mealCount + "）");
+meals.push(mk("2026-11-15", "meal", 16));
+wm = C.weekSummary(meals, "2026-11-09", goals);
+ok(wm.mealCount === 14 && wm.mealMet && wm.mealDaysMet === 7, "每天 2 次才達標");
+ok(C.formatMinutes(14 * 60 + 40) === "14 分", "14 分 40 秒顯示 14 分，不進位成 15");
 recs.push(mk("2026-11-13", "aerobic", 30));
 ok(C.weekSummary(recs, "2026-11-09", goals).aerobicMet, "達 159 分 >= 150");
 

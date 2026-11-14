@@ -479,7 +479,10 @@
     $("finCredit").textContent = txt + "約消耗 " + k + " 大卡。";
   }
 
+  var saving = false;
   function finishSave() {
+    if (saving || !finishInfo) return;
+    saving = true;
     var sel = document.querySelector('input[name="finInt"]:checked');
     var a = finishInfo.activity;
     var intensity = sel ? sel.value : finishInfo.decision.intensity;
@@ -505,9 +508,11 @@
     };
     return DB.putRecord(rec).then(function () {
       closeSession();
+      saving = false;
       toast("已儲存：" + a.name + " " + C.formatMinutes(rec.durationSec));
       showTab("home");
     }).catch(function (e) {
+      saving = false;
       toast("儲存失敗：" + e);
     });
   }
@@ -697,12 +702,19 @@
     var dp = f.date.value.split("-"), tp = f.time.value.split(":");
     var start = new Date(+dp[0], +dp[1] - 1, +dp[2], +tp[0], +tp[1]).getTime();
     var durationSec = Math.round(+f.minutes.value * 60);
+    var minutesInput = +f.minutes.value;
     var intensity = (f.querySelector('input[name="intensity"]:checked') || {}).value || a.defaultIntensity;
     if (!(durationSec > 0)) { toast("請輸入時間"); return; }
     var p = state.editingId ? DB.getRecord(state.editingId) : Promise.resolve(null);
     p.then(function (old) {
       var rec = old ? Object.assign({}, old) : { id: C.newId(start), manual: true, steps: 0, avgCadence: 0, imuCoverage: 0, bpm: 0 };
       var sameActivity = old && old.activityId === a.id;
+      /* 沒改的欄位保留原始精確值，避免 14 分 40 秒被改成 15 分 */
+      if (old) {
+        var ot = new Date(old.start);
+        if (f.date.value === old.dateKey && f.time.value === C.pad2(ot.getHours()) + ":" + C.pad2(ot.getMinutes())) start = old.start;
+        if (minutesInput === Math.max(1, Math.round(old.durationSec / 60))) durationSec = old.durationSec;
+      }
       rec.start = start;
       rec.end = start + durationSec * 1000;
       rec.dateKey = C.dateKey(start);
@@ -776,7 +788,9 @@
               '<button class="btn small" data-action="del-activity" data-id="' + esc(a.id) + '">刪除</button>') + "</li>";
         }).join("") + "</ul>";
     }).join("");
+    exportCache = null;
     return DB.allRecords().then(function (all) {
+      prepareExport(all);
       var first = all.length ? all[0].dateKey : null;
       return DB.persist().then(function (persisted) {
         $("dataInfo").textContent = "共 " + all.length + " 筆紀錄" + (first ? "，最早 " + first : "") + "。" +
@@ -834,25 +848,32 @@
   }
 
   /* ---------- 備份 ---------- */
+  /* 備份檔在打開設定頁時就先準備好：iOS 要求 navigator.share 必須在點擊當下同步呼叫，
+   * 若先等 IndexedDB 讀取再分享，會因為失去使用者手勢而被拒絕 */
+  var exportCache = null;
+  function prepareExport(records) {
+    var data = { app: "workout-records", version: 1, exportedAt: new Date().toISOString(),
+      profile: state.profile, settings: state.settings, activities: state.activities, records: records };
+    var text = JSON.stringify(data, null, 1);
+    var name = "workout-records-" + todayKey() + ".json";
+    var blob = new Blob([text], { type: "application/json" });
+    var file = null;
+    try { file = new File([blob], name, { type: "application/json" }); } catch (e) { file = null; }
+    exportCache = { text: text, name: name, blob: blob, file: file };
+  }
+
   function exportData() {
-    DB.allRecords().then(function (records) {
-      var data = { app: "workout-records", version: 1, exportedAt: new Date().toISOString(),
-        profile: state.profile, settings: state.settings, activities: state.activities, records: records };
-      var text = JSON.stringify(data, null, 1);
-      var name = "workout-records-" + todayKey() + ".json";
-      var blob = new Blob([text], { type: "application/json" });
-      var file = null;
-      try { file = new File([blob], name, { type: "application/json" }); } catch (e) { file = null; }
-      /* iOS 主畫面模式下 a[download] 不可靠，優先用分享面板（可存到「檔案」） */
-      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: name }).catch(function (e) {
-          if (e && e.name !== "AbortError") downloadBlob(blob, name);
-        });
-      } else {
-        downloadBlob(blob, name);
-      }
-      window.__lastExport = text;
-    });
+    if (!exportCache) { toast("備份檔準備中，請稍後再按一次"); return; }
+    var c = exportCache;
+    window.__lastExport = c.text;
+    /* iOS 主畫面模式下 a[download] 不可靠，優先用分享面板（可存到「檔案」） */
+    if (c.file && navigator.canShare && navigator.canShare({ files: [c.file] })) {
+      navigator.share({ files: [c.file], title: c.name }).catch(function (e) {
+        if (e && e.name !== "AbortError") downloadBlob(c.blob, c.name);
+      });
+    } else {
+      downloadBlob(c.blob, c.name);
+    }
   }
 
   function downloadBlob(blob, name) {
