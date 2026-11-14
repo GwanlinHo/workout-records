@@ -1,6 +1,6 @@
 /* Service Worker：快取全部檔案供離線使用（運動資料在 IndexedDB，不經過這裡）
  * 更新任何檔案後，請把 CACHE_NAME 版號加一 */
-var CACHE_NAME = "workout-records-v2";
+var CACHE_NAME = "workout-records-v3";
 var ASSETS = [
   "./",
   "./index.html",

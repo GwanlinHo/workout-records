@@ -159,32 +159,64 @@ async function finish(page, intensity) {
   await click(page, '[data-action="bpm-set"][data-bpm="180"]');
   await click(page, '[data-action="metro-toggle"]');
   await sleep(1200);
-  const au = () => page.evaluate(() => { const a = window.__wr.metro.audio; return { on: window.__wr.metro.on, paused: a.paused, loop: a.loop, dur: a.duration, t: a.currentTime, loads: window.__wr.metro.loads, btn: document.getElementById("metroToggle").textContent }; });
+  const au = () => page.evaluate(() => { const m = window.__wr.metro; const c = m.ctx; return { on: m.on, state: c && c.state, src: !!m.src, loop: m.src && m.src.loop, dur: m.buffer && m.buffer.duration, t: c && c.currentTime, loads: m.loads, btn: document.getElementById("metroToggle").textContent, audioEls: document.querySelectorAll("audio").length }; });
   let m = await au();
-  ok(m.on && !m.paused && m.loop && Math.abs(m.dur - 60) < 0.01 && m.t > 0.5, "節拍音軌循環播放中（長度 " + m.dur + " 秒，已播 " + m.t.toFixed(2) + " 秒）");
+  ok(m.on && m.state === "running" && m.src && m.loop && Math.abs(m.dur - 60) < 0.001 && m.t > 0.5, "節拍以 Web Audio 原生循環播放（長度 " + m.dur + " 秒，音訊時鐘 " + m.t.toFixed(2) + " 秒）");
+  ok(m.audioEls === 0, "不再使用 <audio loop>（接縫會停 1 秒的來源）");
+  ok(await page.evaluate(() => { const b = window.__wr.metro.buffer; const f = b.getChannelData(0); let mx = 0; for (let i = 0; i < 3000; i++) mx = Math.max(mx, Math.abs(f[i])); return mx > 0.5 && b.length === Math.round(180 * b.sampleRate * 60 / 180); }), "音軌樣本與長度正確（整數拍）");
   ok(await page.evaluate(() => navigator.mediaSession.metadata && navigator.mediaSession.metadata.title === "節拍器 180 BPM"), "鎖屏畫面顯示節拍器資訊");
+  /* 接縫實測：用 OfflineAudioContext 跑同樣的 loop 設定 2.5 輪（短音軌），檢查跨接縫拍距 */
+  const seam = await page.evaluate(async () => {
+    const sr = 8000, C = window.WRCore, f = C.metronomeSamples(150, 2, sr, 0.7);
+    const oc = new OfflineAudioContext(1, Math.round(f.length * 2.5), sr);
+    const b = oc.createBuffer(1, f.length, sr); b.getChannelData(0).set(f);
+    const s = oc.createBufferSource(); s.buffer = b; s.loop = true; s.connect(oc.destination); s.start();
+    const out = (await oc.startRendering()).getChannelData(0);
+    const on = []; let last = -1e9;
+    for (let i = 0; i < out.length; i++) if (Math.abs(out[i]) > 0.2 && i - last > 400) { on.push(i); last = i; }
+    const gaps = on.slice(1).map((v, i) => v - on[i]);
+    return { n: on.length, len: f.length, gaps };
+  });
+  ok(seam.n >= 12 && seam.gaps.every((g) => Math.abs(g - 3200) <= 2), "原生循環跨接縫拍距一致，無中斷（" + seam.n + " 拍，拍距 " + Math.min(...seam.gaps) + "–" + Math.max(...seam.gaps) + " 樣本）");
   await click(page, '[data-action="bpm"][data-delta="-5"]');
   await sleep(500);
   m = await au();
-  ok(m.loads === 2 && !m.paused && m.on, "播放中改 BPM 會重新產生音軌並繼續播放");
+  ok(m.loads === 2 && m.src && m.on && Math.abs(m.dur - 60) < 0.001, "播放中改 BPM 會重新產生音軌並繼續播放");
   await click(page, '[data-action="bpm-set"][data-bpm="180"]');
   await sleep(300);
   await click(page, '[data-action="session-pause"]');
   await sleep(300);
   m = await au();
-  ok(m.paused && !m.on, "暫停計時時節拍聲一起暫停");
+  ok(!m.src && !m.on, "暫停計時時節拍聲一起暫停");
   await click(page, '[data-action="session-pause"]');
   await sleep(500);
   m = await au();
-  ok(!m.paused && m.on, "繼續計時時節拍聲恢復");
-  await page.evaluate(() => window.__wr.metro.audio.pause());   /* 模擬來電或鎖屏畫面按暫停 */
+  ok(m.src && m.on && m.state === "running", "繼續計時時節拍聲恢復");
+  /* 模擬背景後回前景：音訊時鐘跟實際時間一致 → 提示持續；落後 → 提示中斷 */
+  const visTest = (audioBehind) => page.evaluate(async (behind) => {
+    const m = window.__wr.metro;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    m.hiddenAt.wall -= 30000;
+    m.hiddenAt.audio -= 30 - behind;
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    delete document.visibilityState;
+    await new Promise((r) => setTimeout(r, 100));
+    return document.getElementById("toast").textContent;
+  }, audioBehind);
+  let tt = await visTest(0);
+  ok(tt.includes("[O]"), "回前景時確認背景期間節拍聲持續（" + tt + "）");
+  tt = await visTest(30);
+  ok(tt.includes("[!]") && tt.includes("30"), "回前景時偵測背景期間節拍聲中斷（" + tt + "）");
+  await page.evaluate(() => window.__wr.metro.ctx.suspend());   /* 模擬來電打斷 */
   await sleep(300);
   m = await au();
-  ok(!m.on && m.btn === "開啟", "被系統暫停時按鈕狀態同步（" + m.btn + "）");
+  ok(!m.on && m.btn === "開啟", "被系統打斷時按鈕狀態同步（" + m.btn + "）");
   await click(page, '[data-action="metro-toggle"]');
   await sleep(400);
   m = await au();
-  ok(!m.paused && m.on, "再按開啟恢復播放");
+  ok(m.src && m.on && m.state === "running", "再按開啟恢復播放");
   await feedSteps(page, 170, 15, 0);
   await sleep(700);
   ok((await text(page, "#cadenceCompare")).includes("偏慢 10"), "顯示實際步頻與目標差距（" + (await text(page, "#cadenceCompare")) + "）");

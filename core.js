@@ -270,10 +270,10 @@
   }
 
   /* ---------- 節拍器音軌 ----------
-   * 鎖屏後網頁程式會被凍結，無法即時排拍子，所以預先產生一段滴答聲 WAV 循環播放。
+   * 由 Web Audio 的 AudioBufferSourceNode（loop）在音訊執行緒原生循環，不經 JS 計時，
+   * 也不像 <audio loop> 在 iOS 每次回到開頭都會停約 1 秒。
    * 長度取整數拍：60 秒、整數 BPM 剛好 bpm 拍，循環接縫不會亂拍。
-   * 拍點位置用 round(i * 每拍樣本數)，誤差小於 1 個樣本，不會累積。
-   * iOS 會忽略 audio.volume，所以音量直接寫進樣本。 */
+   * 拍點位置用 round(i * 每拍樣本數)，誤差小於 1 個樣本，不會累積。 */
   function clickPositions(bpm, seconds, sampleRate) {
     var beats = Math.max(1, Math.round(seconds * bpm / 60));
     var per = sampleRate * 60 / bpm;
@@ -282,9 +282,28 @@
     return { positions: pos, totalSamples: Math.round(beats * per) };
   }
 
-  function buildMetronomeWav(bpm, seconds, sampleRate, volume) {
+  /* 回傳 -1..1 的 Float32 樣本（長度 = totalSamples），WAV 與 AudioBuffer 共用 */
+  function metronomeSamples(bpm, seconds, sampleRate, volume) {
     var cp = clickPositions(bpm, seconds, sampleRate);
     var n = cp.totalSamples;
+    var out = new Float32Array(n);
+    var len = Math.round(0.03 * sampleRate), attack = Math.max(1, Math.round(0.002 * sampleRate));
+    var tau = 0.006 * sampleRate, amp = Math.max(0, Math.min(1, volume));
+    var half = sampleRate / 1600 / 2;   /* 1600Hz 方波的半週期（樣本數） */
+    cp.positions.forEach(function (p) {
+      for (var j = 0; j < len && p + j < n; j++) {
+        var env = j < attack ? j / attack : Math.exp(-(j - attack) / tau);
+        var sq = Math.floor(j / half) % 2 === 0 ? 1 : -1;
+        out[p + j] = amp * env * sq;
+      }
+    });
+    return out;
+  }
+
+  /* 試聽用短 WAV（iOS 會忽略 audio.volume，所以音量直接寫進樣本） */
+  function buildMetronomeWav(bpm, seconds, sampleRate, volume) {
+    var f = metronomeSamples(bpm, seconds, sampleRate, volume);
+    var n = f.length;
     var buf = new ArrayBuffer(44 + n * 2);
     var v = new DataView(buf);
     function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
@@ -293,16 +312,7 @@
     v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
     v.setUint16(32, 2, true); v.setUint16(34, 16, true);
     str(36, "data"); v.setUint32(40, n * 2, true);
-    var len = Math.round(0.03 * sampleRate), attack = Math.max(1, Math.round(0.002 * sampleRate));
-    var tau = 0.006 * sampleRate, amp = 32767 * Math.max(0, Math.min(1, volume));
-    var half = sampleRate / 1600 / 2;   /* 1600Hz 方波的半週期（樣本數） */
-    cp.positions.forEach(function (p) {
-      for (var j = 0; j < len && p + j < n; j++) {
-        var env = j < attack ? j / attack : Math.exp(-(j - attack) / tau);
-        var sq = Math.floor(j / half) % 2 === 0 ? 1 : -1;
-        v.setInt16(44 + (p + j) * 2, Math.round(amp * env * sq), true);
-      }
-    });
+    for (var i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(f[i] * 32767), true);
     return buf;
   }
 
@@ -394,7 +404,7 @@
     weekSummary: weekSummary,
     activeMs: activeMs, formatDuration: formatDuration, formatMinutes: formatMinutes,
     createStepDetector: createStepDetector, decideIntensity: decideIntensity,
-    clickPositions: clickPositions, buildMetronomeWav: buildMetronomeWav, clampBpm: clampBpm,
+    clickPositions: clickPositions, metronomeSamples: metronomeSamples, buildMetronomeWav: buildMetronomeWav, clampBpm: clampBpm,
     defaultActivities: defaultActivities, defaultSettings: defaultSettings,
     validateRecord: validateRecord, parseBackup: parseBackup, newId: newId,
   };

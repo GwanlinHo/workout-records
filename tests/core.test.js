@@ -149,6 +149,22 @@ const p2 = C.clickPositions(180, 60, 16000).positions[2];
 ok(peak(p2, p2 + 200) > 20000 && peak(p2 + 1000, p2 + 5000) === 0, "每拍有滴答聲，拍與拍之間安靜");
 const quiet = C.buildMetronomeWav(180, 60, 16000, 0.2);
 ok(new DataView(quiet).getInt16(44 + 40 * 2, true) !== 0 && Math.abs(peak(0, 300)) > Math.abs((() => { const d = new DataView(quiet); let m = 0; for (let i = 0; i < 300; i++) m = Math.max(m, Math.abs(d.getInt16(44 + i * 2, true))); return m; })()), "音量寫進樣本");
+[44100, 48000].forEach((sr) => {
+  const f = C.metronomeSamples(173, 60, sr, 0.7);
+  const cp2 = C.clickPositions(173, 60, sr);
+  ok(f instanceof Float32Array && f.length === cp2.totalSamples, sr + " Hz 樣本長度等於整數拍循環長度");
+  let mx = 0; for (let i = 0; i < 2000; i++) mx = Math.max(mx, Math.abs(f[i]));
+  ok(mx > 0.6 && mx <= 0.7, sr + " Hz 樣本峰值依音量");
+  /* 模擬原生循環：把兩輪接起來，找出所有拍點，間隔要一致（接縫不中斷） */
+  const loops = 2, onsets = [];
+  for (let k = 0; k < loops * f.length; k++) {
+    const i = k % f.length, prev = (k - 1 + f.length) % f.length;
+    if (k > 0 && f[i] !== 0 && f[prev] === 0 && (k < 50 || f[(k - 50 + f.length) % f.length] === 0)) onsets.push(k);
+  }
+  const gaps = onsets.slice(1).map((v, i) => v - onsets[i]);
+  const per = sr * 60 / 173;
+  ok(onsets.length >= 173 * 2 - 2 && gaps.every((g) => Math.abs(g - per) <= 1), sr + " Hz 跨循環接縫拍距一致");
+});
 ok(C.clampBpm(300) === 220 && C.clampBpm("abc") === 40 && C.clampBpm(179.6) === 180, "BPM 範圍");
 
 /* ---- 備份 ---- */

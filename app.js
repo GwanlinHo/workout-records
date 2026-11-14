@@ -291,11 +291,12 @@
   }
 
   /* ---------- 節拍器 ----------
-   * 鎖屏後網頁程式會被凍結，無法即時排拍子。所以依 BPM 預先產生 60 秒的滴答聲 WAV，
-   * 用 <audio loop> 循環播放：iOS 允許網頁在鎖屏時繼續播放媒體，計時則本來就用時間戳記。
-   * audioSession 設為 playback（使用者選定）：鎖屏、靜音開關都不影響，但會暫停其他 App 的音樂。 */
+   * 依 BPM 預先產生 60 秒（整數拍）的滴答聲，交給 Web Audio 的 AudioBufferSourceNode 以 loop 原生循環：
+   * 循環在音訊執行緒進行，不靠 JS 計時（鎖屏後 JS 會被凍結），接縫也不像 <audio loop> 會停約 1 秒。
+   * audioSession 設為 playback（使用者選定）：鎖屏、靜音開關都不影響，但會暫停其他 App 的音樂。
+   * 鎖屏時 iOS 是否讓 AudioContext 繼續跑需實機確認；回到前景時會比對音訊時鐘與實際時間並提示結果。 */
   var TRACK_SECONDS = 60, TRACK_RATE = 16000;
-  var metro = { audio: null, url: null, on: false, wanted: false, bpm: 180, trackKey: "", switching: 0, resumeOnContinue: false, loads: 0 };
+  var metro = { ctx: null, src: null, buffer: null, on: false, wanted: false, bpm: 180, trackKey: "", resumeOnContinue: false, loads: 0, hiddenAt: null };
 
   function setAudioSessionType() {
     if (navigator.audioSession) {
@@ -303,56 +304,68 @@
     }
   }
 
-  function ensureAudioEl() {
-    if (metro.audio) return metro.audio;
-    var a = document.createElement("audio");
-    a.loop = true;
-    a.preload = "auto";
-    a.setAttribute("playsinline", "");
-    a.hidden = true;
-    document.body.appendChild(a);
-    /* 被系統暫停（來電、鎖屏畫面的暫停鍵）時同步按鈕狀態 */
-    a.addEventListener("pause", function () {
-      if (metro.switching || !metro.on) return;
+  /* 整個 App 只用一個 AudioContext，第一次在使用者點擊當下建立 */
+  function ensureCtx() {
+    if (metro.ctx) return metro.ctx;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    var ctx = new AC();
+    /* 被系統打斷（來電等）時同步按鈕狀態；鎖屏造成的暫停留給回前景時處理 */
+    ctx.onstatechange = function () {
+      if (ctx.state === "running" || !metro.on || document.visibilityState !== "visible") return;
       metro.on = false;
+      metro.resumeOnContinue = false;
+      stopSource();
       updateMetroUI();
-    });
-    metro.audio = a;
-    return a;
+    };
+    metro.ctx = ctx;
+    return ctx;
   }
 
-  function loadTrack(a) {
+  function loadBuffer(ctx) {
     var vol = state.settings.metronomeVolume || 0.7;
-    var key = metro.bpm + "@" + vol;
-    if (key === metro.trackKey && metro.url) return;
-    var wav = C.buildMetronomeWav(metro.bpm, TRACK_SECONDS, TRACK_RATE, vol);
-    var url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
-    if (metro.url) URL.revokeObjectURL(metro.url);
-    metro.url = url;
+    var key = metro.bpm + "@" + vol + "@" + ctx.sampleRate;
+    if (key === metro.trackKey && metro.buffer) return metro.buffer;
+    var f = C.metronomeSamples(metro.bpm, TRACK_SECONDS, ctx.sampleRate, vol);
+    var buf = ctx.createBuffer(1, f.length, ctx.sampleRate);
+    buf.getChannelData(0).set(f);
+    metro.buffer = buf;
     metro.trackKey = key;
     metro.loads++;
-    a.src = url;
+    return buf;
+  }
+
+  function stopSource() {
+    if (!metro.src) return;
+    try { metro.src.stop(); } catch (e) { /* 忽略 */ }
+    try { metro.src.disconnect(); } catch (e) { /* 忽略 */ }
+    metro.src = null;
   }
 
   /* 必須在使用者點擊（或鎖屏畫面的播放鍵）當下呼叫 */
   function metroPlay() {
     setAudioSessionType();
-    var a = ensureAudioEl();
-    metro.switching++;
-    loadTrack(a);
+    var ctx = ensureCtx();
+    if (!ctx) { toast("這個瀏覽器不支援節拍聲"); return; }
+    var buf = loadBuffer(ctx);
+    stopSource();
+    var src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    src.connect(ctx.destination);
+    src.start();
+    metro.src = src;
     metro.on = true;
     metro.wanted = true;
-    var done = function () { setTimeout(function () { metro.switching = Math.max(0, metro.switching - 1); }, 0); };
-    var p = null;
-    try { p = a.play(); } catch (e) { p = null; }
-    if (p && p.then) {
-      p.then(done, function () {
-        done();
+    if (ctx.state !== "running") {
+      ctx.resume().catch(function () {
+        if (metro.src !== src) return;
+        stopSource();
         metro.on = false;
         updateMetroUI();
         toast("無法播放節拍聲，請再按一次開啟");
       });
-    } else done();
+    }
     setMediaSession();
     updateMetroUI();
   }
@@ -361,11 +374,7 @@
 
   function metroHalt() {
     metro.on = false;
-    if (metro.audio) {
-      metro.switching++;
-      try { metro.audio.pause(); } catch (e) { /* 忽略 */ }
-      setTimeout(function () { metro.switching = Math.max(0, metro.switching - 1); }, 0);
-    }
+    stopSource();
     updateMetroUI();
   }
 
@@ -373,6 +382,35 @@
     metro.wanted = false;
     metro.resumeOnContinue = false;
     metroHalt();
+    /* 結束後讓出音訊，其他 App 的音樂才能繼續 */
+    if (metro.ctx && metro.ctx.state === "running") metro.ctx.suspend().catch(function () { /* 忽略 */ });
+    if ("mediaSession" in navigator) { try { navigator.mediaSession.playbackState = "none"; } catch (e) { /* 忽略 */ } }
+  }
+
+  /* 回到前景：檢查鎖屏期間節拍聲有沒有持續，必要時接回 */
+  function metroOnVisible() {
+    var h = metro.hiddenAt;
+    metro.hiddenAt = null;
+    if (!metro.on || !metro.ctx) return;
+    var ctx = metro.ctx;
+    if (h && Date.now() - h.wall > 10000) {
+      var wallSec = (Date.now() - h.wall) / 1000;
+      var lost = Math.max(0, wallSec - (ctx.currentTime - h.audio));
+      if (lost > 3) toast("[!] 背景期間節拍聲中斷約 " + Math.round(lost) + " 秒");
+      else toast("[O] 背景期間節拍聲持續播放");
+    }
+    if (ctx.state !== "running") {
+      ctx.resume().catch(function () {
+        metro.on = false;
+        stopSource();
+        updateMetroUI();
+        toast("節拍聲已停止，請再按一次開啟");
+      });
+    }
+  }
+
+  function metroOnHidden() {
+    if (metro.on && metro.ctx) metro.hiddenAt = { wall: Date.now(), audio: metro.ctx.currentTime };
   }
 
   /* 鎖屏畫面顯示節拍器與播放、暫停鍵 */
@@ -384,6 +422,7 @@
       }
       navigator.mediaSession.setActionHandler("play", function () { metroPlay(); });
       navigator.mediaSession.setActionHandler("pause", function () { metroStop(); });
+      navigator.mediaSession.playbackState = "playing";
     } catch (e) { /* 忽略 */ }
   }
 
@@ -1025,7 +1064,9 @@
         requestWake();
       }
       if (state.tab === "home") renderHome();
+      metroOnVisible();
     } else {
+      metroOnHidden();
       saveSession();
     }
   }

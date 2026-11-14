@@ -6,7 +6,7 @@ iPhone 用的 PWA，記錄飯後運動、有氧運動與肌力訓練，判斷本
 
 | 檔案 | 用途 |
 |---|---|
-| core.js | 純邏輯：日期（本地時間）、目標計算、計分、計步、強度判定、節拍器排程、備份驗證 |
+| core.js | 純邏輯：日期（本地時間）、目標計算、計分、計步、強度判定、節拍器音軌、備份驗證 |
 | db.js | IndexedDB 存取（records、kv），從不刪除舊資料 |
 | app.js | 介面、計時、動作感測、節拍器、螢幕常亮、匯出匯入 |
 | sw.js | 離線快取。**改任何檔案後 CACHE_NAME 版號加一** |
@@ -26,7 +26,7 @@ iPhone 用的 PWA，記錄飯後運動、有氧運動與肌力訓練，判斷本
 
 - 網頁讀不到 HealthKit；鎖屏或切到背景時讀不到動作感測（不計步）。計時用時間戳記，不受影響。
 - 螢幕常亮預設關閉，只用 Screen Wake Lock（不用影片備援）。
-- 節拍聲：鎖屏後網頁程式會被凍結，所以依 BPM 預先產生 60 秒（整數拍）的 WAV，用 `<audio loop>` 循環播放，並設定 MediaSession 讓鎖屏畫面有播放、暫停鍵。`navigator.audioSession.type = "playback"`（使用者選定）：鎖屏、靜音開關都不影響，但會暫停其他 App 的音樂。iOS 忽略 `audio.volume`，音量直接寫進樣本。
+- 節拍聲：依 BPM 預先產生 60 秒（整數拍）的滴答聲，交給 Web Audio `AudioBufferSourceNode`（`loop = true`）在音訊執行緒原生循環，不靠 JS 計時、接縫不中斷（舊版 `<audio loop>` 在 iOS 每分鐘接縫會停約 1 秒，已棄用）。`navigator.audioSession.type = "playback"`（使用者選定）：靜音開關不影響，但會暫停其他 App 的音樂。鎖屏時 iOS 是否讓 AudioContext 持續需實機確認；回到前景時 App 會比對音訊時鐘與實際時間，提示背景期間是否中斷。
 
 ## 測試
 
