@@ -42,7 +42,8 @@ const rec = (o) => Object.assign({ durationSec: 1800, category: "aerobic", inten
 ok(C.aerobicCredit(rec({})) === 30, "中強度 30 分 = 30");
 ok(C.aerobicCredit(rec({ intensity: "vigorous" })) === 60, "高強度加倍");
 ok(C.aerobicCredit(rec({ intensity: "light" })) === 0, "一般有氧輕鬆不計");
-ok(C.aerobicCredit(rec({ category: "meal", intensity: "light" })) === 30, "飯後散步輕鬆也計 1 倍");
+ok(C.aerobicCredit(rec({ category: "meal", intensity: "light" })) === 0, "飯後散步輕鬆（步頻不到 100）也算 0 分鐘");
+ok(C.aerobicCredit(rec({ category: "meal", intensity: "moderate" })) === 30, "飯後散步中強度計 1 倍");
 ok(C.aerobicCredit(rec({ category: "strength" })) === 0, "肌力不計入有氧");
 ok(C.kcal(3.5, 70, 1800) === 123, "熱量 MET*kg*hr");
 
@@ -127,12 +128,27 @@ d = C.decideIntensity(ssj, 600, { steps: 1800, coveredMs: 600000 });
 ok(d.intensity === "moderate" && !d.needConfirm, "超慢跑 180 步/分 仍是中強度（不依步頻）");
 
 /* ---- 節拍器 ---- */
-let s1 = C.scheduleTicks(10.0, 10.0, 0.12, 180);
-ok(s1.times.length === 1, "lookahead 0.12 秒內 180bpm 排 1 拍");
-let s2 = C.scheduleTicks(s1.nextTime, 10.3, 0.12, 180);
-near(s2.times[0], s1.times[0] + 1 / 3, 1e-9, "拍距 60/180 秒");
-let s3 = C.scheduleTicks(10.0, 300.0, 0.12, 180);
-ok(s3.times.length === 1 && s3.times[0] >= 300, "落後時重設，不補放一長串");
+[180, 173, 160, 101].forEach((bpm) => {
+  const cp = C.clickPositions(bpm, 60, 16000);
+  ok(cp.positions.length === bpm && cp.totalSamples === 960000, bpm + " BPM：60 秒剛好 " + bpm + " 拍，循環長度 960000 樣本");
+  const per = 16000 * 60 / bpm;
+  const worst = Math.max(...cp.positions.map((p, i) => Math.abs(p - i * per)));
+  ok(worst <= 0.5, bpm + " BPM 拍點誤差不超過半個樣本");
+  /* 循環接縫：最後一拍到下一輪第一拍的間隔等於正常拍距 */
+  const seam = cp.totalSamples - cp.positions[cp.positions.length - 1];
+  ok(Math.abs(seam - per) <= 1, bpm + " BPM 循環接縫拍距正確");
+});
+const wav = C.buildMetronomeWav(180, 60, 16000, 0.7);
+const dv = new DataView(wav);
+const tag = (o) => String.fromCharCode(...new Uint8Array(wav, o, 4));
+ok(tag(0) === "RIFF" && tag(8) === "WAVE" && tag(36) === "data" && dv.getUint32(24, true) === 16000 && dv.getUint16(34, true) === 16, "WAV 標頭正確");
+ok(dv.getUint32(40, true) === 960000 * 2 && wav.byteLength === 44 + 960000 * 2, "WAV 資料長度 60 秒");
+const sAt = (i) => dv.getInt16(44 + i * 2, true);
+const peak = (from, to) => { let m = 0; for (let i = from; i < to; i++) m = Math.max(m, Math.abs(sAt(i))); return m; };
+const p2 = C.clickPositions(180, 60, 16000).positions[2];
+ok(peak(p2, p2 + 200) > 20000 && peak(p2 + 1000, p2 + 5000) === 0, "每拍有滴答聲，拍與拍之間安靜");
+const quiet = C.buildMetronomeWav(180, 60, 16000, 0.2);
+ok(new DataView(quiet).getInt16(44 + 40 * 2, true) !== 0 && Math.abs(peak(0, 300)) > Math.abs((() => { const d = new DataView(quiet); let m = 0; for (let i = 0; i < 300; i++) m = Math.max(m, Math.abs(d.getInt16(44 + i * 2, true))); return m; })()), "音量寫進樣本");
 ok(C.clampBpm(300) === 220 && C.clampBpm("abc") === 40 && C.clampBpm(179.6) === 180, "BPM 範圍");
 
 /* ---- 備份 ---- */

@@ -110,15 +110,14 @@
     return "light";
   }
 
-  /* 計入每週有氧目標的分鐘數
-   * - 飯後運動：一律計入，輕鬆也算 1 倍（使用者指定飯後運動算有氧）
-   * - 其他有氧：中強度 1 倍、高強度 2 倍、輕鬆不計入（WHO 定義）
-   * - 肌力：不計入有氧 */
+  /* 計入每週有氧目標的分鐘數（飯後運動與一般有氧同一套規則，使用者指定）
+   * - 中強度 1 倍、高強度 2 倍、輕鬆不計入（WHO 定義；步頻不到 100 即輕鬆）
+   * - 肌力：不計入有氧
+   * 註：輕鬆的飯後運動雖然不計分鐘數，只要滿 mealMinMinutes 仍算一次飯後運動 */
   function aerobicCredit(rec) {
     var min = rec.durationSec / 60;
     if (rec.category === "strength") return 0;
     if (rec.intensity === "vigorous") return min * 2;
-    if (rec.category === "meal") return min;
     if (rec.intensity === "moderate") return min;
     return 0;
   }
@@ -270,19 +269,41 @@
       coverage: coverage, avgCadence: avgCadence, needConfirm: false };
   }
 
-  /* ---------- 節拍器排程 ----------
-   * 標準 lookahead 排程：在 [now, now+lookahead) 內排好所有拍點
-   * 若 nextTime 已落後（回到前景、AudioContext 曾暫停），直接重設到 now，
-   * 避免一次補放一長串拍子 */
-  function scheduleTicks(nextTime, now, lookahead, bpm) {
-    var interval = 60 / bpm;
-    if (nextTime < now) nextTime = now + 0.05;
-    var times = [];
-    while (nextTime < now + lookahead) {
-      times.push(nextTime);
-      nextTime += interval;
-    }
-    return { times: times, nextTime: nextTime };
+  /* ---------- 節拍器音軌 ----------
+   * 鎖屏後網頁程式會被凍結，無法即時排拍子，所以預先產生一段滴答聲 WAV 循環播放。
+   * 長度取整數拍：60 秒、整數 BPM 剛好 bpm 拍，循環接縫不會亂拍。
+   * 拍點位置用 round(i * 每拍樣本數)，誤差小於 1 個樣本，不會累積。
+   * iOS 會忽略 audio.volume，所以音量直接寫進樣本。 */
+  function clickPositions(bpm, seconds, sampleRate) {
+    var beats = Math.max(1, Math.round(seconds * bpm / 60));
+    var per = sampleRate * 60 / bpm;
+    var pos = [];
+    for (var i = 0; i < beats; i++) pos.push(Math.round(i * per));
+    return { positions: pos, totalSamples: Math.round(beats * per) };
+  }
+
+  function buildMetronomeWav(bpm, seconds, sampleRate, volume) {
+    var cp = clickPositions(bpm, seconds, sampleRate);
+    var n = cp.totalSamples;
+    var buf = new ArrayBuffer(44 + n * 2);
+    var v = new DataView(buf);
+    function str(o, s) { for (var i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); }
+    str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE");
+    str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, n * 2, true);
+    var len = Math.round(0.03 * sampleRate), attack = Math.max(1, Math.round(0.002 * sampleRate));
+    var tau = 0.006 * sampleRate, amp = 32767 * Math.max(0, Math.min(1, volume));
+    var half = sampleRate / 1600 / 2;   /* 1600Hz 方波的半週期（樣本數） */
+    cp.positions.forEach(function (p) {
+      for (var j = 0; j < len && p + j < n; j++) {
+        var env = j < attack ? j / attack : Math.exp(-(j - attack) / tau);
+        var sq = Math.floor(j / half) % 2 === 0 ? 1 : -1;
+        v.setInt16(44 + (p + j) * 2, Math.round(amp * env * sq), true);
+      }
+    });
+    return buf;
   }
 
   function clampBpm(v) {
@@ -328,7 +349,7 @@
       weekStart: 1,
       mealPerDay: 2,
       mealMinMinutes: 15,
-      keepAwake: true,
+      keepAwake: false,
       metronomeVolume: 0.7,
     };
   }
@@ -373,7 +394,7 @@
     weekSummary: weekSummary,
     activeMs: activeMs, formatDuration: formatDuration, formatMinutes: formatMinutes,
     createStepDetector: createStepDetector, decideIntensity: decideIntensity,
-    scheduleTicks: scheduleTicks, clampBpm: clampBpm,
+    clickPositions: clickPositions, buildMetronomeWav: buildMetronomeWav, clampBpm: clampBpm,
     defaultActivities: defaultActivities, defaultSettings: defaultSettings,
     validateRecord: validateRecord, parseBackup: parseBackup, newId: newId,
   };

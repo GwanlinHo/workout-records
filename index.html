@@ -86,9 +86,9 @@
         </fieldset>
         <label>飯後運動每天幾次<input name="mealPerDay" type="number" min="1" max="3" required></label>
         <label>飯後運動每次至少幾分鐘才算<input name="mealMinMinutes" type="number" min="5" max="60" required></label>
-        <label class="check"><input type="checkbox" name="keepAwake">運動時保持螢幕常亮（動作感測與節拍聲需要）</label>
+        <label class="check"><input type="checkbox" name="keepAwake">運動時保持螢幕常亮（想自動判斷步頻時才需要；不開也可以鎖屏，計時與節拍聲會繼續，只是鎖屏期間不計步）</label>
         <label>節拍聲音量<input name="metronomeVolume" type="range" min="0.1" max="1" step="0.1"></label>
-        <label class="check"><input type="checkbox" name="mixWithMusic">節拍聲與其他 App 的音樂並存（開啟後，手機靜音時節拍聲也會被靜音）</label>
+        <p class="small muted">節拍聲在鎖屏和靜音模式下都會繼續播放，播放時其他 App 的音樂會暫停。</p>
         <div class="row">
           <button class="btn primary" type="submit">儲存設定</button>
           <button class="btn" type="button" data-action="test-tick">試聽節拍聲</button>
@@ -135,7 +135,7 @@
       <ul class="small muted refs">
         <li>有氧目標：WHO 與國健署建議成人每週 150 分鐘中強度，高強度 1 分鐘等於 2 分鐘；BMI 24 以上依 ACSM 體重管理建議提高到 250 分鐘。</li>
         <li>肌力訓練：每週至少 2 天。65 歲以上另建議平衡訓練。</li>
-        <li>飯後運動：計入有氧分鐘數，輕鬆強度也算；另外追蹤每天次數。</li>
+        <li>飯後運動：和一般有氧同一套規則計入分鐘數（輕鬆強度，也就是步頻不到 100，算 0 分鐘）；另外追蹤每天次數，只要滿設定的分鐘數，不論強度都算一次。</li>
         <li>步頻判斷強度：每分鐘 100 步以上為中強度、130 步以上為高強度（Tudor-Locke 等人）。只用在有勾選「依步頻判斷」的項目（健走、飯後散步）。</li>
         <li>熱量：MET 值乘體重乘時間（MET 參考 Compendium of Physical Activities）；基礎代謝率用 Mifflin-St Jeor 公式。</li>
       </ul>
@@ -161,7 +161,7 @@
   <p id="sessionState" class="muted center"></p>
 
   <div id="readyPanel" class="center">
-    <p class="muted small">按下開始後會要求「動作與方向」權限，用來計步與判斷步頻；拒絕也可以照常計時。</p>
+    <p class="muted small">按下開始後會要求「動作與方向」權限，用來計步與判斷步頻；拒絕也可以照常計時。運動中可以鎖屏，計時與節拍聲會繼續，但鎖屏期間不會計步。</p>
     <button class="btn primary big" data-action="session-go">開始</button>
   </div>
 

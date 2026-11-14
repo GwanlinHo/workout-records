@@ -92,7 +92,8 @@ async function finish(page, intensity) {
 
   /* ---- 健走：IMU 完整覆蓋，自動判斷中強度 ---- */
   await startActivity(page, "brisk-walk", 10);
-  ok(await page.evaluate(() => window.__wake.held() === 1), "開始後取得螢幕常亮");
+  ok(await page.evaluate(() => window.__wake.requests === 0), "螢幕常亮預設關閉，不要求 Wake Lock");
+  ok((await text(page, "#wakeNote")).includes("可以鎖屏"), "提示可以鎖屏");
   await feedSteps(page, 115, 600, 0);
   await sleep(700);
   const steps = +(await text(page, "#stSteps"));
@@ -157,9 +158,33 @@ async function finish(page, intensity) {
   ok((await text(page, "#bpmVal")) === "176", "BPM 調整 -5 +1 = 176");
   await click(page, '[data-action="bpm-set"][data-bpm="180"]');
   await click(page, '[data-action="metro-toggle"]');
-  await sleep(1600);
-  const m = await page.evaluate(() => ({ on: window.__wr.metro.on, count: window.__wr.metro.count || 0, st: window.__wr.metro.ctx && window.__wr.metro.ctx.state }));
-  ok(m.on && m.st === "running" && m.count >= 3, "節拍器有排程發聲（" + m.count + " 拍，" + m.st + "）");
+  await sleep(1200);
+  const au = () => page.evaluate(() => { const a = window.__wr.metro.audio; return { on: window.__wr.metro.on, paused: a.paused, loop: a.loop, dur: a.duration, t: a.currentTime, loads: window.__wr.metro.loads, btn: document.getElementById("metroToggle").textContent }; });
+  let m = await au();
+  ok(m.on && !m.paused && m.loop && Math.abs(m.dur - 60) < 0.01 && m.t > 0.5, "節拍音軌循環播放中（長度 " + m.dur + " 秒，已播 " + m.t.toFixed(2) + " 秒）");
+  ok(await page.evaluate(() => navigator.mediaSession.metadata && navigator.mediaSession.metadata.title === "節拍器 180 BPM"), "鎖屏畫面顯示節拍器資訊");
+  await click(page, '[data-action="bpm"][data-delta="-5"]');
+  await sleep(500);
+  m = await au();
+  ok(m.loads === 2 && !m.paused && m.on, "播放中改 BPM 會重新產生音軌並繼續播放");
+  await click(page, '[data-action="bpm-set"][data-bpm="180"]');
+  await sleep(300);
+  await click(page, '[data-action="session-pause"]');
+  await sleep(300);
+  m = await au();
+  ok(m.paused && !m.on, "暫停計時時節拍聲一起暫停");
+  await click(page, '[data-action="session-pause"]');
+  await sleep(500);
+  m = await au();
+  ok(!m.paused && m.on, "繼續計時時節拍聲恢復");
+  await page.evaluate(() => window.__wr.metro.audio.pause());   /* 模擬來電或鎖屏畫面按暫停 */
+  await sleep(300);
+  m = await au();
+  ok(!m.on && m.btn === "開啟", "被系統暫停時按鈕狀態同步（" + m.btn + "）");
+  await click(page, '[data-action="metro-toggle"]');
+  await sleep(400);
+  m = await au();
+  ok(!m.paused && m.on, "再按開啟恢復播放");
   await feedSteps(page, 170, 15, 0);
   await sleep(700);
   ok((await text(page, "#cadenceCompare")).includes("偏慢 10"), "顯示實際步頻與目標差距（" + (await text(page, "#cadenceCompare")) + "）");
@@ -182,6 +207,7 @@ async function finish(page, intensity) {
   await startActivity(page, "meal-walk", 16);
   await finish(page);
   ok((await text(page, "#finHint")).includes("動作感測資料不足"), "飯後散步沒帶手機要確認強度");
+  ok((await text(page, "#finCredit")).includes("計入有氧 16 分鐘") && (await text(page, "#finCredit")).includes("算一次飯後運動"), "中強度飯後 16 分鐘：計入有氧且算一次");
   /* 連點兩下儲存只能存一筆 */
   await page.evaluate(() => { const b = document.querySelector('[data-action="finish-save"]'); b.click(); b.click(); });
   await sleep(300);
@@ -190,11 +216,18 @@ async function finish(page, intensity) {
   ok((await text(page, "#finHint")).includes("未滿 15 分鐘"), "未滿 15 分鐘提示不算次數");
   await page.click('#finIntensity input[value="light"]');
   await sleep(100);
-  ok((await text(page, "#finCredit")).includes("計入有氧 14 分鐘"), "飯後輕鬆仍計入有氧");
+  ok((await text(page, "#finCredit")).includes("輕鬆強度不計入有氧分鐘數") && !(await text(page, "#finCredit")).includes("算一次"), "飯後輕鬆不計分鐘，未滿 15 分也不算次數");
   await click(page, '[data-action="finish-save"]');
   await sleep(300);
   ok((await text(page, "#cardMeal")).includes("今天 1 / 2 次"), "飯後今天 1 / 2 次");
-  ok((await text(page, "#cardAerobic")).includes("85 / 150"), "有氧累計 10+40+5+16+14 = 85");
+  ok((await text(page, "#cardAerobic")).includes("71 / 150"), "有氧累計 10+40+5+16+0 = 71");
+  /* 輕鬆但滿 15 分鐘的飯後散步：0 分鐘，但算一次 */
+  await startActivity(page, "meal-walk", 20);
+  await finish(page, "light");
+  ok((await text(page, "#finCredit")).includes("輕鬆強度不計入有氧分鐘數") && (await text(page, "#finCredit")).includes("算一次飯後運動"), "輕鬆飯後 20 分鐘：不計分鐘但算一次");
+  await click(page, '[data-action="finish-save"]');
+  await sleep(300);
+  ok((await text(page, "#cardMeal")).includes("今天 2 / 2 次") && (await text(page, "#cardAerobic")).includes("71 / 150"), "今天飯後 2 / 2 次，有氧仍 71");
   await page.screenshot({ path: SHOT + "shot_home.png", fullPage: true });
 
   /* ---- 取消準備中的運動不留紀錄 ---- */
@@ -208,9 +241,9 @@ async function finish(page, intensity) {
   await page.click('#tabbar [data-tab="history"]');
   await sleep(400);
   const todayCell = await page.$eval(".cal-c.today .cal-m", (e) => e.textContent);
-  ok(todayCell === "95", "月曆今天顯示 10+20+30+5+16+14 = 95 分鐘（" + todayCell + "）");
+  ok(todayCell === "115", "月曆今天顯示 10+20+30+5+16+14+20 = 115 分鐘（" + todayCell + "）");
   const n = await page.$$eval("#dayDetail .rec", (l) => l.length);
-  ok(n === 6, "今天 6 筆紀錄（" + n + "）");
+  ok(n === 7, "今天 7 筆紀錄（" + n + "）");
   await page.screenshot({ path: SHOT + "shot_history.png", fullPage: true });
   /* 只改強度不可動到原本精確的時間（14 分多的飯後散步不能被進位成 15 分） */
   const mealRec = await page.evaluate(() => WRDB.allRecords().then((l) => {
@@ -270,7 +303,7 @@ async function finish(page, intensity) {
   await click(page, "#profileForm button[type=submit]");
   await sleep(400);
   ok((await text(page, "#goalExplain")).includes("有氧 250 分鐘"), "BMI 26.1 目標改為 250");
-  ok((await text(page, "#dataInfo")).includes("共 7 筆紀錄"), "資料筆數 7（" + (await text(page, "#dataInfo")) + "）");
+  ok((await text(page, "#dataInfo")).includes("共 8 筆紀錄"), "資料筆數 8（" + (await text(page, "#dataInfo")) + "）");
   await page.screenshot({ path: SHOT + "shot_settings.png", fullPage: true });
   await page.type("#activityForm [name=name]", "跳繩");
   await click(page, "#activityForm button[type=submit]");
@@ -299,7 +332,7 @@ async function finish(page, intensity) {
   await sleep(500);
   const exported = await page.evaluate(() => window.__lastExport);
   const ex = JSON.parse(exported);
-  ok(ex.app === "workout-records" && ex.records.length === 7 && ex.profile.weightKg === 80, "匯出 7 筆與個人資料");
+  ok(ex.app === "workout-records" && ex.records.length === 8 && ex.profile.weightKg === 80, "匯出 8 筆與個人資料");
 
   /* ---- 離線 ---- */
   await page.evaluate(() => navigator.serviceWorker.ready);
@@ -322,12 +355,19 @@ async function finish(page, intensity) {
     }
     ok(worst <= w, "寬度 " + w + " 無橫向捲動（" + worst + "）");
   }
+  await page.click('#tabbar [data-tab="settings"]');
+  await sleep(300);
+  await page.$eval("#settingsForm [name=keepAwake]", (e) => { e.checked = true; });
+  await page.$eval("#settingsForm button[type=submit]", (e) => e.click());
+  await sleep(400);
   await page.setViewport({ width: 320, height: 640, isMobile: true, hasTouch: true });
   await startActivity(page, "jog", 0);
+  ok(await page.evaluate(() => window.__wake.held() === 1), "設定開啟螢幕常亮後，運動時取得 Wake Lock");
   ok(await page.evaluate(() => document.documentElement.scrollWidth <= 320), "計時畫面 320 寬不溢出");
   await page.screenshot({ path: SHOT + "shot_session_320.png", fullPage: true });
   await click(page, '[data-action="session-end"]');
   await click(page, '[data-action="finish-discard"]');
+  ok(await page.evaluate(() => window.__wake.held() === 0), "結束後釋放 Wake Lock");
 
   /* ---- 匯入到全新的手機 ---- */
   const ctx2 = await browser.createBrowserContext();
@@ -349,7 +389,7 @@ async function finish(page, intensity) {
   await sleep(300);
   await p2.click('#tabbar [data-tab="settings"]');
   await sleep(400);
-  ok((await text(p2, "#dataInfo")).includes("共 7 筆紀錄"), "新手機匯入 7 筆、重複匯入不重複");
+  ok((await text(p2, "#dataInfo")).includes("共 8 筆紀錄"), "新手機匯入 8 筆、重複匯入不重複");
   await p2.click('#tabbar [data-tab="start"]');
   await sleep(200);
   ok((await text(p2, "#activityGroups")).includes("跳繩"), "匯入帶回自訂項目");

@@ -188,7 +188,6 @@
     session.pausedAt = null;
     detector = C.createStepDetector();
     startMotion();
-    unlockAudio();
     saveSession();
     openSessionScreen();
     startTicking();
@@ -246,8 +245,10 @@
     if (session.pausedAt) {
       session.pauses.push({ from: session.pausedAt, to: now() });
       session.pausedAt = null;
+      if (metro.resumeOnContinue) { metro.resumeOnContinue = false; metroPlay(); }
     } else {
       session.pausedAt = now();
+      if (metro.on) { metro.resumeOnContinue = true; metroHalt(); }
     }
     saveSession();
     updateTimer();
@@ -289,72 +290,116 @@
     motionState = "off";
   }
 
-  /* ---------- 節拍器 ---------- */
-  var metro = { ctx: null, on: false, wanted: false, bpm: 180, next: 0, timer: null };
+  /* ---------- 節拍器 ----------
+   * 鎖屏後網頁程式會被凍結，無法即時排拍子。所以依 BPM 預先產生 60 秒的滴答聲 WAV，
+   * 用 <audio loop> 循環播放：iOS 允許網頁在鎖屏時繼續播放媒體，計時則本來就用時間戳記。
+   * audioSession 設為 playback（使用者選定）：鎖屏、靜音開關都不影響，但會暫停其他 App 的音樂。 */
+  var TRACK_SECONDS = 60, TRACK_RATE = 16000;
+  var metro = { audio: null, url: null, on: false, wanted: false, bpm: 180, trackKey: "", switching: 0, resumeOnContinue: false, loads: 0 };
 
   function setAudioSessionType() {
     if (navigator.audioSession) {
-      try { navigator.audioSession.type = state.settings.mixWithMusic ? "ambient" : "playback"; } catch (e) { /* 忽略 */ }
+      try { navigator.audioSession.type = "playback"; } catch (e) { /* 忽略 */ }
     }
   }
 
-  function unlockAudio() {
-    setAudioSessionType();
-    if (!metro.ctx) {
-      var AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      metro.ctx = new AC();
-    }
-    if (metro.ctx.state !== "running") { try { metro.ctx.resume(); } catch (e) { /* 忽略 */ } }
-    return metro.ctx;
+  function ensureAudioEl() {
+    if (metro.audio) return metro.audio;
+    var a = document.createElement("audio");
+    a.loop = true;
+    a.preload = "auto";
+    a.setAttribute("playsinline", "");
+    a.hidden = true;
+    document.body.appendChild(a);
+    /* 被系統暫停（來電、鎖屏畫面的暫停鍵）時同步按鈕狀態 */
+    a.addEventListener("pause", function () {
+      if (metro.switching || !metro.on) return;
+      metro.on = false;
+      updateMetroUI();
+    });
+    metro.audio = a;
+    return a;
   }
 
-  function click(time) {
-    var ctx = metro.ctx;
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
+  function loadTrack(a) {
     var vol = state.settings.metronomeVolume || 0.7;
-    osc.type = "square";
-    osc.frequency.value = 1600;
-    gain.gain.setValueAtTime(0.0001, time);
-    gain.gain.exponentialRampToValueAtTime(vol, time + 0.002);
-    gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.035);
-    osc.connect(gain).connect(ctx.destination);
-    osc.start(time);
-    osc.stop(time + 0.04);
-    metro.count = (metro.count || 0) + 1;
+    var key = metro.bpm + "@" + vol;
+    if (key === metro.trackKey && metro.url) return;
+    var wav = C.buildMetronomeWav(metro.bpm, TRACK_SECONDS, TRACK_RATE, vol);
+    var url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+    if (metro.url) URL.revokeObjectURL(metro.url);
+    metro.url = url;
+    metro.trackKey = key;
+    metro.loads++;
+    a.src = url;
   }
 
-  function pump() {
-    if (!metro.on || !metro.ctx) return;
-    if (metro.ctx.state !== "running") return;
-    var r = C.scheduleTicks(metro.next, metro.ctx.currentTime, 0.12, metro.bpm);
-    r.times.forEach(click);
-    metro.next = r.nextTime;
-  }
-
-  function metroStart() {
-    if (!unlockAudio()) { toast("此裝置不支援節拍聲"); return; }
+  /* 必須在使用者點擊（或鎖屏畫面的播放鍵）當下呼叫 */
+  function metroPlay() {
+    setAudioSessionType();
+    var a = ensureAudioEl();
+    metro.switching++;
+    loadTrack(a);
     metro.on = true;
     metro.wanted = true;
-    metro.next = 0;
-    clearInterval(metro.timer);
-    metro.timer = setInterval(pump, 25);
-    pump();
+    var done = function () { setTimeout(function () { metro.switching = Math.max(0, metro.switching - 1); }, 0); };
+    var p = null;
+    try { p = a.play(); } catch (e) { p = null; }
+    if (p && p.then) {
+      p.then(done, function () {
+        done();
+        metro.on = false;
+        updateMetroUI();
+        toast("無法播放節拍聲，請再按一次開啟");
+      });
+    } else done();
+    setMediaSession();
+    updateMetroUI();
+  }
+
+  function metroStart() { metroPlay(); }
+
+  function metroHalt() {
+    metro.on = false;
+    if (metro.audio) {
+      metro.switching++;
+      try { metro.audio.pause(); } catch (e) { /* 忽略 */ }
+      setTimeout(function () { metro.switching = Math.max(0, metro.switching - 1); }, 0);
+    }
     updateMetroUI();
   }
 
   function metroStop() {
-    metro.on = false;
     metro.wanted = false;
-    clearInterval(metro.timer);
-    metro.timer = null;
-    updateMetroUI();
+    metro.resumeOnContinue = false;
+    metroHalt();
+  }
+
+  /* 鎖屏畫面顯示節拍器與播放、暫停鍵 */
+  function setMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    try {
+      if (window.MediaMetadata) {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: "節拍器 " + metro.bpm + " BPM", artist: "運動紀錄" });
+      }
+      navigator.mediaSession.setActionHandler("play", function () { metroPlay(); });
+      navigator.mediaSession.setActionHandler("pause", function () { metroStop(); });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  function testTick() {
+    state.settings.metronomeVolume = +$("settingsForm").metronomeVolume.value;
+    setAudioSessionType();
+    var wav = C.buildMetronomeWav(120, 2, TRACK_RATE, state.settings.metronomeVolume);
+    var url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+    var a = new Audio(url);
+    a.addEventListener("ended", function () { URL.revokeObjectURL(url); });
+    a.play().catch(function () { toast("無法播放"); });
   }
 
   function setBpm(v) {
     metro.bpm = C.clampBpm(v);
-    metro.next = 0;   /* 立刻用新速度重排 */
+    if (metro.on) metroPlay();   /* 重新產生音軌，用新速度播放 */
     if (session) {
       session.bpm = metro.bpm;
       saveSession();
@@ -429,7 +474,7 @@
 
   function updateWakeNote() {
     var t;
-    if (!state.settings.keepAwake) t = "螢幕常亮已關閉：鎖屏後動作感測與節拍聲會停止，計時不受影響。";
+    if (!state.settings.keepAwake) t = "可以鎖屏：計時與節拍聲會繼續，但鎖屏期間不會計步。";
     else if (!("wakeLock" in navigator)) t = "此裝置不支援螢幕常亮，請把系統的自動鎖定時間調長。";
     else if (wakeLock) t = "螢幕常亮中。";
     else if (wakePending) t = "正在取得螢幕常亮…";
@@ -457,7 +502,7 @@
     else if (d.needConfirm) hint = "[!] 動作感測資料不足（例如鎖屏或手機沒帶在身上），請選擇這次的強度。";
     else hint = "已套用此項目的預設強度，可以修改。";
     if (a.category === "meal" && durationSec < state.settings.mealMinMinutes * 60) {
-      hint += " 這次未滿 " + state.settings.mealMinMinutes + " 分鐘，會計入有氧分鐘數，但不算一次飯後運動。";
+      hint += " 這次未滿 " + state.settings.mealMinMinutes + " 分鐘，不算一次飯後運動（有氧分鐘數照強度計算）。";
     }
     $("finHint").textContent = hint;
     $("finHint").classList.toggle("warn-text", d.needConfirm);
@@ -475,7 +520,8 @@
     var cr = C.aerobicCredit(rec);
     var k = C.kcal(C.metFor(finishInfo.activity, intensity), state.profile.weightKg, finishInfo.durationSec);
     var txt = finishInfo.activity.category === "strength" ? "計入肌力訓練天數。" :
-      cr > 0 ? "計入有氧 " + Math.round(cr) + " 分鐘。" : "輕鬆強度不計入有氧目標（飯後運動除外）。";
+      cr > 0 ? "計入有氧 " + Math.round(cr) + " 分鐘。" : "輕鬆強度不計入有氧分鐘數。";
+    if (finishInfo.activity.category === "meal" && finishInfo.durationSec >= state.settings.mealMinMinutes * 60) txt += "算一次飯後運動。";
     $("finCredit").textContent = txt + "約消耗 " + k + " 大卡。";
   }
 
@@ -770,7 +816,6 @@
     f.mealMinMinutes.value = s.mealMinMinutes;
     f.keepAwake.checked = !!s.keepAwake;
     f.metronomeVolume.value = s.metronomeVolume;
-    f.mixWithMusic.checked = !!s.mixWithMusic;
     if (state.profile) {
       var g = goals();
       $("goalExplain").innerHTML = "<p>年齡 " + g.age + " 歲，BMI " + g.bmi.toFixed(1) + "（" + C.bmiLevel(g.bmi) + "），基礎代謝率約 " +
@@ -815,9 +860,7 @@
     s.mealMinMinutes = Math.max(5, Math.min(60, Math.round(+f.mealMinMinutes.value || 15)));
     s.keepAwake = f.keepAwake.checked;
     s.metronomeVolume = +f.metronomeVolume.value;
-    s.mixWithMusic = f.mixWithMusic.checked;
     DB.setKV("settings", s).then(function () {
-      setAudioSessionType();
       toast("設定已儲存");
       renderSettings();
     });
@@ -941,10 +984,10 @@
       case "open-session": openSessionScreen(); break;
       case "session-pause": togglePause(); break;
       case "session-end": sessionEnd(); break;
-      case "motion-retry": startMotion(); unlockAudio(); requestWake(); updateTimer(); break;
+      case "motion-retry": startMotion(); requestWake(); updateTimer(); break;
       case "metro-toggle":
         if (metro.on) metroStop();
-        else { metro.wanted = true; metroStart(); }
+        else metroStart();
         break;
       case "bpm": setBpm(metro.bpm + (+el.getAttribute("data-delta"))); break;
       case "bpm-set": setBpm(+el.getAttribute("data-bpm")); break;
@@ -971,11 +1014,7 @@
       case "month-next": state.month = shiftMonth(state.month, 1); renderHistory(); break;
       case "export": exportData(); break;
       case "del-activity": delActivity(el.getAttribute("data-id")); break;
-      case "test-tick": {
-        state.settings.metronomeVolume = +$("settingsForm").metronomeVolume.value;
-        if (unlockAudio()) { var t0 = metro.ctx.currentTime + 0.05; for (var i = 0; i < 4; i++) click(t0 + i * 0.5); }
-        break;
-      }
+      case "test-tick": testTick(); break;
     }
   }
 
@@ -984,10 +1023,6 @@
       if (session && session.startedAt) {
         updateTimer();
         requestWake();
-        if (metro.on && metro.ctx) {
-          try { metro.ctx.resume(); } catch (e) { /* 忽略 */ }
-          metro.next = 0;   /* 不補放鎖屏期間的拍子 */
-        }
       }
       if (state.tab === "home") renderHome();
     } else {
