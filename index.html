@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>運動紀錄</title>
+<meta name="description" content="記錄飯後運動、有氧運動與肌力訓練，資料只存在手機上。">
+<meta name="theme-color" content="#f4f6f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121615" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="運動紀錄">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar"><h1 id="pageTitle">本週</h1></header>
+
+<main id="main">
+  <!-- 本週 -->
+  <section id="view-home" class="view">
+    <div id="sessionBanner" class="banner" hidden>
+      <span>運動進行中：<b id="bannerName"></b> <span id="bannerTime" class="mono"></span></span>
+      <button class="btn small" data-action="open-session">回到計時</button>
+    </div>
+    <p class="week-range" id="weekRange"></p>
+    <div class="card" id="cardAerobic"></div>
+    <div class="card" id="cardMeal"></div>
+    <div class="card" id="cardStrength"></div>
+    <div class="card" id="cardDays"></div>
+    <button class="btn primary big" data-action="go-start">開始運動</button>
+  </section>
+
+  <!-- 選運動 -->
+  <section id="view-start" class="view" hidden>
+    <div id="activityGroups"></div>
+    <button class="btn ghost" data-action="manual-add">補登一筆紀錄</button>
+  </section>
+
+  <!-- 歷史 -->
+  <section id="view-history" class="view" hidden>
+    <div class="card">
+      <div class="month-nav">
+        <button class="btn small" data-action="month-prev" aria-label="上個月">上個月</button>
+        <h2 id="monthTitle"></h2>
+        <button class="btn small" data-action="month-next" aria-label="下個月">下個月</button>
+      </div>
+      <div id="calendar" class="calendar" role="grid"></div>
+      <div class="legend" id="calLegend"></div>
+      <p class="muted small" id="monthSummary"></p>
+    </div>
+    <div class="card" id="dayDetail"></div>
+    <div class="card">
+      <h2>近 12 週有氧分鐘數</h2>
+      <p class="muted small">含飯後運動；高強度 1 分鐘算 2 分鐘。虛線為目前目標。</p>
+      <div id="weekChart" class="week-chart"></div>
+    </div>
+  </section>
+
+  <!-- 設定 -->
+  <section id="view-settings" class="view" hidden>
+    <div class="card">
+      <h2>個人資料</h2>
+      <form id="profileForm" class="form">
+        <label>身高（公分）<input name="heightCm" type="number" inputmode="decimal" min="100" max="230" step="0.1" required></label>
+        <label>體重（公斤）<input name="weightKg" type="number" inputmode="decimal" min="25" max="250" step="0.1" required></label>
+        <label>出生年（西元）<input name="birthYear" type="number" inputmode="numeric" min="1920" max="2020" required></label>
+        <fieldset class="seg"><legend>性別</legend>
+          <label><input type="radio" name="sex" value="male" required>男</label>
+          <label><input type="radio" name="sex" value="female">女</label>
+        </fieldset>
+        <button class="btn primary" type="submit">儲存個人資料</button>
+      </form>
+      <div id="goalExplain" class="explain"></div>
+    </div>
+
+    <div class="card">
+      <h2>目標與計時</h2>
+      <form id="settingsForm" class="form">
+        <fieldset class="seg"><legend>每週從哪天開始</legend>
+          <label><input type="radio" name="weekStart" value="1">星期一</label>
+          <label><input type="radio" name="weekStart" value="0">星期日</label>
+        </fieldset>
+        <label>飯後運動每天幾次<input name="mealPerDay" type="number" min="1" max="3" required></label>
+        <label>飯後運動每次至少幾分鐘才算<input name="mealMinMinutes" type="number" min="5" max="60" required></label>
+        <label class="check"><input type="checkbox" name="keepAwake">運動時保持螢幕常亮（動作感測與節拍聲需要）</label>
+        <label>節拍聲音量<input name="metronomeVolume" type="range" min="0.1" max="1" step="0.1"></label>
+        <label class="check"><input type="checkbox" name="mixWithMusic">節拍聲與其他 App 的音樂並存（開啟後，手機靜音時節拍聲也會被靜音）</label>
+        <div class="row">
+          <button class="btn primary" type="submit">儲存設定</button>
+          <button class="btn" type="button" data-action="test-tick">試聽節拍聲</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>運動項目</h2>
+      <div id="activityList"></div>
+      <form id="activityForm" class="form">
+        <h3>新增項目</h3>
+        <label>名稱<input name="name" maxlength="12" required></label>
+        <label>類別
+          <select name="category">
+            <option value="meal">飯後運動</option>
+            <option value="aerobic" selected>有氧運動</option>
+            <option value="strength">肌力訓練</option>
+          </select>
+        </label>
+        <label>預設強度
+          <select name="defaultIntensity">
+            <option value="light">輕鬆</option>
+            <option value="moderate" selected>中強度</option>
+            <option value="vigorous">高強度</option>
+          </select>
+        </label>
+        <button class="btn" type="submit">新增</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>資料與備份</h2>
+      <p id="dataInfo" class="muted"></p>
+      <p class="muted small">所有資料只存在這支手機的瀏覽器資料庫，不會上傳。請把本 App 加入主畫面使用，並定期匯出備份檔（換手機或刪除 App 時用來還原）。</p>
+      <div class="row">
+        <button class="btn" data-action="export">匯出備份檔</button>
+        <label class="btn file-btn">匯入備份檔<input type="file" id="importFile" accept=".json,application/json" hidden></label>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>計算依據</h2>
+      <ul class="small muted refs">
+        <li>有氧目標：WHO 與國健署建議成人每週 150 分鐘中強度，高強度 1 分鐘等於 2 分鐘；BMI 24 以上依 ACSM 體重管理建議提高到 250 分鐘。</li>
+        <li>肌力訓練：每週至少 2 天。65 歲以上另建議平衡訓練。</li>
+        <li>飯後運動：計入有氧分鐘數，輕鬆強度也算；另外追蹤每天次數。</li>
+        <li>步頻判斷強度：每分鐘 100 步以上為中強度、130 步以上為高強度（Tudor-Locke 等人）。只用在有勾選「依步頻判斷」的項目（健走、飯後散步）。</li>
+        <li>熱量：MET 值乘體重乘時間（MET 參考 Compendium of Physical Activities）；基礎代謝率用 Mifflin-St Jeor 公式。</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar" id="tabbar">
+  <button data-tab="home" class="active">本週</button>
+  <button data-tab="start">運動</button>
+  <button data-tab="history">歷史</button>
+  <button data-tab="settings">設定</button>
+</nav>
+
+<!-- 計時畫面 -->
+<div id="sessionScreen" class="screen" hidden>
+  <div class="screen-head">
+    <button class="btn small" data-action="session-minimize">縮小</button>
+    <span id="sessionCat" class="tag"></span>
+  </div>
+  <h2 id="sessionName" class="session-name"></h2>
+  <div id="timer" class="timer mono">00:00</div>
+  <p id="sessionState" class="muted center"></p>
+
+  <div id="readyPanel" class="center">
+    <p class="muted small">按下開始後會要求「動作與方向」權限，用來計步與判斷步頻；拒絕也可以照常計時。</p>
+    <button class="btn primary big" data-action="session-go">開始</button>
+  </div>
+
+  <div id="runPanel" hidden>
+    <div class="stats">
+      <div><span class="label">步數</span><b id="stSteps" class="mono">0</b></div>
+      <div><span class="label">步頻（步/分）</span><b id="stCadence" class="mono">-</b></div>
+      <div><span class="label">動作感測</span><b id="stImu">-</b></div>
+    </div>
+    <button class="btn small" id="motionRetry" data-action="motion-retry" hidden>重新啟用動作感測</button>
+    <p id="wakeNote" class="muted small center"></p>
+  </div>
+
+  <div class="card metro">
+    <div class="metro-head">
+      <h3>節拍器</h3>
+      <button class="btn" id="metroToggle" data-action="metro-toggle" aria-pressed="false">開啟</button>
+    </div>
+    <div class="metro-bpm">
+      <button class="btn" data-action="bpm" data-delta="-5">-5</button>
+      <button class="btn" data-action="bpm" data-delta="-1">-1</button>
+      <div class="bpm-val"><b id="bpmVal" class="mono">180</b><span class="small muted">BPM</span></div>
+      <button class="btn" data-action="bpm" data-delta="1">+1</button>
+      <button class="btn" data-action="bpm" data-delta="5">+5</button>
+    </div>
+    <div class="row center presets">
+      <button class="btn small" data-action="bpm-set" data-bpm="120">120</button>
+      <button class="btn small" data-action="bpm-set" data-bpm="160">160</button>
+      <button class="btn small" data-action="bpm-set" data-bpm="170">170</button>
+      <button class="btn small" data-action="bpm-set" data-bpm="180">180</button>
+    </div>
+    <p id="cadenceCompare" class="small center muted"></p>
+  </div>
+
+  <div class="row session-actions" id="sessionActions" hidden>
+    <button class="btn big" id="pauseBtn" data-action="session-pause">暫停</button>
+    <button class="btn danger big" data-action="session-end">結束</button>
+  </div>
+  <button class="btn ghost" id="cancelReady" data-action="session-cancel">取消</button>
+</div>
+
+<!-- 結束確認 -->
+<div id="finishSheet" class="sheet" hidden>
+  <div class="sheet-body">
+    <h2>這次運動</h2>
+    <p><b id="finName"></b>　<span id="finDur" class="mono"></span></p>
+    <p id="finImu" class="small muted"></p>
+    <p id="finHint" class="hint"></p>
+    <fieldset class="seg big-seg" id="finIntensity"><legend>強度</legend>
+      <label><input type="radio" name="finInt" value="light">輕鬆<small>還能唱歌</small></label>
+      <label><input type="radio" name="finInt" value="moderate">中強度<small>能說話不能唱歌</small></label>
+      <label><input type="radio" name="finInt" value="vigorous">高強度<small>只能說幾個字</small></label>
+    </fieldset>
+    <p id="finCredit" class="small"></p>
+    <div class="row">
+      <button class="btn primary big" data-action="finish-save">儲存</button>
+      <button class="btn" data-action="finish-back">繼續運動</button>
+    </div>
+    <button class="btn ghost danger-text" data-action="finish-discard">不儲存這次運動</button>
+  </div>
+</div>
+
+<!-- 補登 / 編輯 -->
+<div id="editSheet" class="sheet" hidden>
+  <div class="sheet-body">
+    <h2 id="editTitle">補登紀錄</h2>
+    <form id="editForm" class="form">
+      <label>日期<input name="date" type="date" required></label>
+      <label>開始時間<input name="time" type="time" required></label>
+      <label>項目<select name="activityId" id="editActivity"></select></label>
+      <label>時間（分鐘）<input name="minutes" type="number" min="1" max="600" step="1" inputmode="numeric" required></label>
+      <fieldset class="seg"><legend>強度</legend>
+        <label><input type="radio" name="intensity" value="light">輕鬆</label>
+        <label><input type="radio" name="intensity" value="moderate">中強度</label>
+        <label><input type="radio" name="intensity" value="vigorous">高強度</label>
+      </fieldset>
+      <div class="row">
+        <button class="btn primary" type="submit">儲存</button>
+        <button class="btn" type="button" data-action="edit-close">取消</button>
+      </div>
+      <button class="btn ghost danger-text" type="button" id="editDelete" data-action="edit-delete" hidden>刪除這筆紀錄</button>
+    </form>
+  </div>
+</div>
+
+<!-- 首次使用 -->
+<div id="welcome" class="screen" hidden>
+  <h2>歡迎使用運動紀錄</h2>
+  <p>請先填寫個人資料，用來計算每週運動目標與消耗熱量。資料只存在這支手機上。</p>
+  <form id="welcomeForm" class="form">
+    <label>身高（公分）<input name="heightCm" type="number" inputmode="decimal" min="100" max="230" step="0.1" required></label>
+    <label>體重（公斤）<input name="weightKg" type="number" inputmode="decimal" min="25" max="250" step="0.1" required></label>
+    <label>出生年（西元）<input name="birthYear" type="number" inputmode="numeric" min="1920" max="2020" required></label>
+    <fieldset class="seg"><legend>性別</legend>
+      <label><input type="radio" name="sex" value="male" required>男</label>
+      <label><input type="radio" name="sex" value="female">女</label>
+    </fieldset>
+    <button class="btn primary big" type="submit">開始使用</button>
+  </form>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="core.js"></script>
+<script src="db.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
