@@ -355,10 +355,66 @@ async function finish(page, intensity) {
     for (const tab of ["home", "start", "history", "settings"]) {
       await page.click('#tabbar [data-tab="' + tab + '"]');
       await sleep(250);
-      worst = Math.max(worst, await page.evaluate(() => document.documentElement.scrollWidth));
+      worst = Math.max(worst, await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.getElementById("main").scrollWidth)));
     }
     ok(worst <= w, "寬度 " + w + " 無橫向捲動（" + worst + "）");
   }
+  /* ---- 版面：頁籤固定貼齊底部、標題貼齊頂端，文件本身不捲動（iOS 主畫面模式錯位修正） ---- */
+  await page.setViewport({ width: 390, height: 700, isMobile: true, hasTouch: true });
+  const layout = () => page.evaluate(() => {
+    const tb = document.getElementById("tabbar").getBoundingClientRect();
+    const top = document.querySelector(".topbar").getBoundingClientRect();
+    return { gap: Math.abs(window.innerHeight - tb.bottom), top: top.top, docY: window.scrollY,
+      docScrollable: document.documentElement.scrollHeight > window.innerHeight + 1 };
+  });
+  const layoutOk = (l) => l.gap < 1 && Math.abs(l.top) < 1 && l.docY === 0 && !l.docScrollable;
+  let badTabs = [];
+  for (const tab of ["home", "start", "history", "settings"]) {
+    await page.click('#tabbar [data-tab="' + tab + '"]');
+    await sleep(250);
+    await page.evaluate(() => { const m = document.getElementById("main"); m.scrollTop = m.scrollHeight; });
+    await sleep(100);
+    const l = await layout();
+    if (!layoutOk(l)) badTabs.push(tab + JSON.stringify(l));
+  }
+  ok(badTabs.length === 0, "四個頁面捲到底時頁籤仍貼齊底部、標題仍在頂端" + (badTabs.length ? "：" + badTabs.join(" ") : ""));
+  await page.click('#tabbar [data-tab="home"]');
+  await sleep(250);
+  ok(await page.evaluate(() => { const m = document.getElementById("main"); return m.scrollHeight > m.clientHeight; }), "內容超過一頁時由內容區捲動");
+  await page.evaluate(() => { document.getElementById("main").scrollTop = 200; });
+  await page.click('#tabbar [data-tab="start"]');
+  await sleep(250);
+  ok(await page.evaluate(() => document.getElementById("main").scrollTop === 0), "切換頁籤時內容區回到頂端");
+  /* 開關計時畫面後 */
+  await startActivity(page, "jog", 0);
+  await click(page, '[data-action="session-end"]');
+  await click(page, '[data-action="finish-discard"]');
+  await sleep(300);
+  ok(layoutOk(await layout()), "開關計時畫面後頁籤仍貼齊底部");
+  /* 模擬 iOS 鍵盤收起後文件停在捲動位置：輸入框失焦後要自動捲回原點 */
+  await page.click('#tabbar [data-tab="settings"]');
+  await sleep(300);
+  await page.focus("#profileForm [name=weightKg]");
+  await page.evaluate(() => {
+    document.documentElement.style.overflow = "visible"; document.body.style.overflow = "visible";
+    document.body.style.height = "auto"; document.body.style.paddingBottom = "1200px"; window.scrollTo(0, 300);
+  });
+  const stuck = await page.evaluate(() => window.scrollY);
+  await page.evaluate(() => document.activeElement.blur());
+  await sleep(400);
+  const afterBlur = await page.evaluate(() => window.scrollY);
+  await page.evaluate(() => { document.documentElement.style.overflow = ""; document.body.style.overflow = ""; document.body.style.paddingBottom = ""; document.body.style.height = ""; });
+  ok(stuck > 0 && afterBlur === 0, "輸入框失焦後文件自動捲回原點（模擬 " + stuck + " → " + afterBlur + "）");
+  /* 編輯面板開關後 */
+  await page.click('#tabbar [data-tab="start"]');
+  await sleep(250);
+  await click(page, '[data-action="manual-add"]');
+  await page.focus("#editForm [name=minutes]");
+  await page.evaluate(() => document.activeElement.blur());
+  await click(page, '[data-action="edit-close"]');
+  await sleep(300);
+  ok(layoutOk(await layout()), "開關編輯面板後頁籤仍貼齊底部");
+
   await page.click('#tabbar [data-tab="settings"]');
   await sleep(300);
   ok(await page.evaluate(() => !document.querySelector("#settingsForm [name=keepAwake]")), "設定頁已無螢幕常亮選項");

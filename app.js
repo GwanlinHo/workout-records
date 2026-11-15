@@ -855,7 +855,8 @@
     });
     $("pageTitle").textContent = TAB_TITLE[tab];
     $("sessionBanner").hidden = !(session && session.startedAt);
-    window.scrollTo(0, 0);
+    $("main").scrollTop = 0;
+    resetViewport();
     if (tab === "home") return renderHome();
     if (tab === "start") return renderStart();
     if (tab === "history") return renderHistory();
@@ -914,8 +915,25 @@
     }
   }
 
+  /* iOS 主畫面模式：鍵盤收起、全螢幕畫面關閉、從分享面板或背景回來後，
+     整份文件可能停在被捲動的位置，畫面錯位。文件本身不該捲動，一律捲回原點。
+     輸入框還在編輯時不動，以免把正在輸入的欄位捲出畫面。 */
+  function resetViewport() {
+    var a = document.activeElement;
+    if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== "radio" && a.type !== "checkbox" && a.type !== "range") return;
+    if (window.scrollX || window.scrollY) window.scrollTo(0, 0);
+    if (document.documentElement.scrollTop) document.documentElement.scrollTop = 0;
+    if (document.body.scrollTop) document.body.scrollTop = 0;
+  }
+  var resetTimer = null;
+  function resetViewportSoon() {
+    clearTimeout(resetTimer);
+    resetTimer = setTimeout(resetViewport, 120);
+  }
+
   function onVisibility() {
     if (document.visibilityState === "visible") {
+      resetViewportSoon();
       if (session && session.startedAt) updateTimer();
       if (state.tab === "home") renderHome();
       metroOnVisible();
@@ -927,7 +945,13 @@
 
   function bind() {
     document.addEventListener("click", onClick);
+    document.addEventListener("click", resetViewportSoon);
+    document.addEventListener("focusout", resetViewportSoon);
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", resetViewportSoon);
+    window.addEventListener("pageshow", resetViewportSoon);
+    window.addEventListener("orientationchange", resetViewportSoon);
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", resetViewportSoon);
     window.addEventListener("pagehide", saveSession);
     document.querySelectorAll('input[name="finInt"]').forEach(function (r) { r.addEventListener("change", updateFinCredit); });
     $("editForm").addEventListener("submit", saveEdit);
